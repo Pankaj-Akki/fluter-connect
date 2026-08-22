@@ -1,0 +1,26 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "3a76f854197152aa1013eeaa30adac95"
+application_url = "https://example.com"
+embedded = true
+name = "fluter-connect"
+[access_scopes]
+scopes = "read_customers, write_customers, write_app_proxy, read_orders"
+
+[app_proxy]
+url = "/flutter-proxy"
+prefix = "apps"
+subpath = "flutter-sync"
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/orders-create"
+  topics = [ "orders/create" ]
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]
+
+[build]
+automatically_update_urls_on_dev = true
