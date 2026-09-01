@@ -2,7 +2,7 @@
 
 client_id = "e21abfc566fccf991974575d334b6cb1"
 name = "flutter-new-app"
-application_url = "https://7841b2f5d7298c.lhr.life"
+application_url = "https://fluter-connect.onrender.com"
 embedded = true
 
 [access_scopes]
@@ -14,7 +14,7 @@ prefix = "apps"
 subpath = "flutter-sync"
 
 [auth]
-redirect_urls = [ "https://7841b2f5d7298c.lhr.life/auth/callback" ]
+redirect_urls = [ "https://fluter-connect.onrender.com/auth/callback" ]
 
 [webhooks]
 api_version = "2026-07"
