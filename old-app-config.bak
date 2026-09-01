@@ -1,20 +1,16 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "e21abfc566fccf991974575d334b6cb1"
-name = "flutter-new-app"
-application_url = "https://7841b2f5d7298c.lhr.life"
+client_id = "3a76f854197152aa1013eeaa30adac95"
+application_url = "https://shopify-flutter-pankaj.loca.lt"
 embedded = true
-
+name = "fluter-connect"
 [access_scopes]
-scopes = "read_customers,read_orders,write_app_proxy,write_customers"
+scopes = "read_customers, write_customers, write_app_proxy, read_orders"
 
 [app_proxy]
 url = "/flutter-proxy"
 prefix = "apps"
 subpath = "flutter-sync"
-
-[auth]
-redirect_urls = [ "https://7841b2f5d7298c.lhr.life/auth/callback" ]
 
 [webhooks]
 api_version = "2026-07"
@@ -22,6 +18,9 @@ api_version = "2026-07"
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/orders-create"
   topics = [ "orders/create" ]
+
+[auth]
+redirect_urls = [ "https://shopify-flutter-pankaj.loca.lt/auth/callback" ]
 
 [build]
 automatically_update_urls_on_dev = true
