@@ -64,7 +64,7 @@ async function handleGetOrders(request: Request) {
     const cleanNum = rawId.replace(/^r/i, "");
     const targetEmail = email.toLowerCase();
 
-    // Fetch store customers and recent orders cleanly without requesting variant (avoids read_products scope error)
+    // Minimal GraphQL query avoiding any variant or restricted product fields
     const response = await admin.graphql(
       `#graphql
       query FetchStoreOrdersAndCustomers {
@@ -107,12 +107,6 @@ async function handleGetOrders(request: Request) {
               nodes {
                 title
                 quantity
-                originalUnitPriceSet {
-                  shopMoney {
-                    amount
-                    currencyCode
-                  }
-                }
               }
             }
           }
@@ -197,7 +191,7 @@ async function handleGetOrders(request: Request) {
       line_items: (o.lineItems?.nodes || []).map((li: any) => ({
         title: li.title,
         quantity: li.quantity,
-        price: li.originalUnitPriceSet?.shopMoney ? `${li.originalUnitPriceSet.shopMoney.currencyCode === 'INR' ? '₹' : li.originalUnitPriceSet.shopMoney.currencyCode + ' '}${parseFloat(li.originalUnitPriceSet.shopMoney.amount).toFixed(2)}` : '',
+        price: '',
         variant_id: null,
         image_url: '',
       })),
