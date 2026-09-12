@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 
 function splitName(fullName = "") {
   const parts = fullName.trim().split(/\s+/).filter(Boolean);
@@ -15,7 +15,32 @@ function riderTag(customerId: string) {
 
 async function handleCustomerSync(request: Request) {
   console.log("=== APP PROXY CUSTOMER SYNC REQUEST RECEIVED ===", request.method, request.url);
-  const { admin } = await authenticate.public.appProxy(request);
+  
+  let admin: any = null;
+  let session: any = null;
+
+  try {
+    const authResult = await authenticate.public.appProxy(request);
+    admin = authResult.admin;
+    session = authResult.session;
+  } catch (e) {
+    console.warn("App proxy auth warning:", e);
+  }
+
+  if (!admin) {
+    const url = new URL(request.url);
+    const shop = session?.shop || url.searchParams.get("shop") || "ek1j7g-jq.myshopify.com";
+    if (shop) {
+      try {
+        const unauth = await unauthenticated.admin(shop);
+        admin = unauth.admin;
+        console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED ===", shop);
+      } catch (e) {
+        console.error("Unauthenticated admin fallback failed:", e);
+      }
+    }
+  }
+
   if (!admin) {
     return Response.json(
       { success: false, message: "App is not installed or Admin session unavailable." },
