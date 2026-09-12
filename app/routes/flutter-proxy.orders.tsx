@@ -16,46 +16,59 @@ async function handleGetOrders(request: Request) {
   }
 
   const url = new URL(request.url);
-  let customerId = url.searchParams.get("customer_id") || "";
+  let customerId = (url.searchParams.get("customer_id") || "").trim();
+  let email = (url.searchParams.get("email") || "").trim();
 
-  if (!customerId && (request.method === "POST" || request.method === "PUT")) {
+  if (request.method === "POST" || request.method === "PUT") {
     try {
       const body = await request.json();
-      customerId = body.customer_id || "";
+      if (!customerId) customerId = String(body.customer_id || "").trim();
+      if (!email) email = String(body.email || "").trim();
     } catch (e) {
       // Ignored
     }
   }
 
-  if (!customerId) {
+  console.log(`=== ORDERS PROXY SEARCH PARAMS: customerId="${customerId}", email="${email}" ===`);
+
+  if (!customerId && !email) {
     return Response.json(
-      { success: false, message: "customer_id parameter is required." },
+      { success: false, message: "customer_id or email parameter is required." },
       { status: 400 }
     );
   }
 
-  // Normalize customerId (handle both "521" and "R521")
-  const rawId = customerId.trim();
+  const rawId = customerId;
   const cleanNum = rawId.replace(/^R/i, "");
   
   const tag1 = riderTag(rawId);          // e.g. flutter_customer_521 or flutter_customer_R521
   const tag2 = riderTag(`R${cleanNum}`); // e.g. flutter_customer_R521
   const tag3 = riderTag(cleanNum);       // e.g. flutter_customer_521
 
-  const searchQuery = `tag:'${tag1}' OR tag:'${tag2}' OR tag:'${tag3}' OR tag:'${rawId}' OR tag:'R${cleanNum}' OR tag:'${cleanNum}'`;
+  // Build robust search terms for Shopify GraphQL
+  const searchTerms = [
+    tag1 ? `tag:${tag1}` : '',
+    tag2 ? `tag:${tag2}` : '',
+    tag3 ? `tag:${tag3}` : '',
+    rawId ? `tag:${rawId}` : '',
+    cleanNum ? `tag:R${cleanNum}` : '',
+    cleanNum ? `tag:${cleanNum}` : '',
+    email ? `email:${email}` : '',
+  ].filter(Boolean);
 
-  console.log("=== APP PROXY ORDERS SEARCH QUERY ===", searchQuery);
+  const searchQuery = searchTerms.join(" OR ");
+  console.log("=== EXECUTING SHOPIFY GRAPHQL QUERY ===", searchQuery);
 
-  // Search customer orders by tag or metafield query
   const response = await admin.graphql(
     `#graphql
     query FindCustomerOrders($query: String!) {
-      customers(first: 5, query: $query) {
+      customers(first: 10, query: $query) {
         nodes {
           id
           firstName
           lastName
           email
+          tags
           orders(first: 25, sortKey: CREATED_AT, reverse: true) {
             nodes {
               id
@@ -92,7 +105,7 @@ async function handleGetOrders(request: Request) {
           }
         }
       }
-      directOrders: orders(first: 25, query: $query, sortKey: CREATED_AT, reverse: true) {
+      allRecentOrders: orders(first: 30, sortKey: CREATED_AT, reverse: true) {
         nodes {
           id
           name
@@ -105,6 +118,11 @@ async function handleGetOrders(request: Request) {
           }
           displayFulfillmentStatus
           displayFinancialStatus
+          customer {
+            id
+            email
+            tags
+          }
           lineItems(first: 20) {
             nodes {
               title
@@ -127,17 +145,18 @@ async function handleGetOrders(request: Request) {
         }
       }
     }`,
-    {
-      variables: { query: searchQuery }
-    }
+    { variables: { query: searchQuery } }
   );
 
   const json = await response.json();
+  console.log("=== GRAPHQL RESPONSE DATA ===", JSON.stringify(json));
+
   const customerNodes = json.data?.customers?.nodes || [];
-  
-  // Aggregate all orders from matching customers & direct orders
+  const allRecentOrders = json.data?.allRecentOrders?.nodes || [];
+
   const map = new Map<string, any>();
 
+  // 1. Add orders from matching customers
   for (const cust of customerNodes) {
     const custOrders = cust.orders?.nodes || [];
     for (const o of custOrders) {
@@ -147,10 +166,21 @@ async function handleGetOrders(request: Request) {
     }
   }
 
-  const directOrders = json.data?.directOrders?.nodes || [];
-  for (const o of directOrders) {
-    if (!map.has(o.id)) {
-      map.set(o.id, o);
+  // 2. Add orders directly matching customer email or tags
+  for (const o of allRecentOrders) {
+    const cust = o.customer;
+    if (cust) {
+      const matchEmail = email && cust.email && cust.email.toLowerCase() === email.toLowerCase();
+      const custTags = cust.tags || [];
+      const matchTag = custTags.some((t: string) => 
+        (rawId && t.includes(rawId)) || 
+        (cleanNum && t.includes(`R${cleanNum}`)) || 
+        (cleanNum && t.includes(cleanNum))
+      );
+
+      if ((matchEmail || matchTag) && !map.has(o.id)) {
+        map.set(o.id, o);
+      }
     }
   }
 
@@ -174,6 +204,7 @@ async function handleGetOrders(request: Request) {
   return Response.json({
     success: true,
     customer_id: customerId,
+    email: email,
     orders_count: orders.length,
     orders,
   });
