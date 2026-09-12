@@ -34,15 +34,28 @@ async function handleGetOrders(request: Request) {
     );
   }
 
-  const tag = riderTag(customerId);
+  // Normalize customerId (handle both "521" and "R521")
+  const rawId = customerId.trim();
+  const cleanNum = rawId.replace(/^R/i, "");
+  
+  const tag1 = riderTag(rawId);          // e.g. flutter_customer_521 or flutter_customer_R521
+  const tag2 = riderTag(`R${cleanNum}`); // e.g. flutter_customer_R521
+  const tag3 = riderTag(cleanNum);       // e.g. flutter_customer_521
+
+  const searchQuery = `tag:'${tag1}' OR tag:'${tag2}' OR tag:'${tag3}' OR tag:'${rawId}' OR tag:'R${cleanNum}' OR tag:'${cleanNum}'`;
+
+  console.log("=== APP PROXY ORDERS SEARCH QUERY ===", searchQuery);
 
   // Search customer orders by tag or metafield query
   const response = await admin.graphql(
     `#graphql
-    query FindCustomerOrders($customerQuery: String!, $orderQuery: String!) {
-      customers(first: 1, query: $customerQuery) {
+    query FindCustomerOrders($query: String!) {
+      customers(first: 5, query: $query) {
         nodes {
           id
+          firstName
+          lastName
+          email
           orders(first: 25, sortKey: CREATED_AT, reverse: true) {
             nodes {
               id
@@ -79,7 +92,7 @@ async function handleGetOrders(request: Request) {
           }
         }
       }
-      directOrders: orders(first: 25, query: $orderQuery, sortKey: CREATED_AT, reverse: true) {
+      directOrders: orders(first: 25, query: $query, sortKey: CREATED_AT, reverse: true) {
         nodes {
           id
           name
@@ -115,21 +128,27 @@ async function handleGetOrders(request: Request) {
       }
     }`,
     {
-      variables: {
-        customerQuery: `tag:'${tag}' OR tag:'${customerId}'`,
-        orderQuery: `tag:'${tag}' OR tag:'${customerId}'`,
-      },
+      variables: { query: searchQuery }
     }
   );
 
   const json = await response.json();
-  const customerNode = json.data?.customers?.nodes?.[0];
-  const customerOrders = customerNode?.orders?.nodes || [];
-  const directOrders = json.data?.directOrders?.nodes || [];
-
-  // Combine and deduplicate orders by ID
+  const customerNodes = json.data?.customers?.nodes || [];
+  
+  // Aggregate all orders from matching customers & direct orders
   const map = new Map<string, any>();
-  for (const o of [...customerOrders, ...directOrders]) {
+
+  for (const cust of customerNodes) {
+    const custOrders = cust.orders?.nodes || [];
+    for (const o of custOrders) {
+      if (!map.has(o.id)) {
+        map.set(o.id, o);
+      }
+    }
+  }
+
+  const directOrders = json.data?.directOrders?.nodes || [];
+  for (const o of directOrders) {
     if (!map.has(o.id)) {
       map.set(o.id, o);
     }
