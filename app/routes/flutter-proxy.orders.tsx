@@ -1,10 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 
-function riderTag(customerId: string) {
-  return `flutter_customer_${customerId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
-}
-
 async function handleGetOrders(request: Request) {
   console.log("=== APP PROXY ORDERS REQUEST RECEIVED ===", request.method, request.url);
   const { admin } = await authenticate.public.appProxy(request);
@@ -29,7 +25,7 @@ async function handleGetOrders(request: Request) {
     }
   }
 
-  console.log(`=== ORDERS PROXY SEARCH PARAMS: customerId="${customerId}", email="${email}" ===`);
+  console.log(`=== ORDERS PROXY INPUT: customerId="${customerId}", email="${email}" ===`);
 
   if (!customerId && !email) {
     return Response.json(
@@ -38,37 +34,24 @@ async function handleGetOrders(request: Request) {
     );
   }
 
-  const rawId = customerId;
-  const cleanNum = rawId.replace(/^R/i, "");
-  
-  const tag1 = riderTag(rawId);          // e.g. flutter_customer_521 or flutter_customer_R521
-  const tag2 = riderTag(`R${cleanNum}`); // e.g. flutter_customer_R521
-  const tag3 = riderTag(cleanNum);       // e.g. flutter_customer_521
+  const rawId = customerId.toLowerCase();
+  const cleanNum = rawId.replace(/^r/i, "");
+  const targetEmail = email.toLowerCase();
 
-  // Build robust search terms for Shopify GraphQL
-  const searchTerms = [
-    tag1 ? `tag:${tag1}` : '',
-    tag2 ? `tag:${tag2}` : '',
-    tag3 ? `tag:${tag3}` : '',
-    rawId ? `tag:${rawId}` : '',
-    cleanNum ? `tag:R${cleanNum}` : '',
-    cleanNum ? `tag:${cleanNum}` : '',
-    email ? `email:${email}` : '',
-  ].filter(Boolean);
-
-  const searchQuery = searchTerms.join(" OR ");
-  console.log("=== EXECUTING SHOPIFY GRAPHQL QUERY ===", searchQuery);
-
+  // Fetch recent orders & customers directly without relying on complex search syntax parser
   const response = await admin.graphql(
     `#graphql
-    query FindCustomerOrders($query: String!) {
-      customers(first: 10, query: $query) {
+    query FetchStoreOrdersAndCustomers {
+      customers(first: 50) {
         nodes {
           id
+          email
           firstName
           lastName
-          email
           tags
+          customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") {
+            value
+          }
           orders(first: 25, sortKey: CREATED_AT, reverse: true) {
             nodes {
               id
@@ -105,7 +88,7 @@ async function handleGetOrders(request: Request) {
           }
         }
       }
-      allRecentOrders: orders(first: 30, sortKey: CREATED_AT, reverse: true) {
+      recentOrders: orders(first: 50, sortKey: CREATED_AT, reverse: true) {
         nodes {
           id
           name
@@ -122,6 +105,9 @@ async function handleGetOrders(request: Request) {
             id
             email
             tags
+            customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") {
+              value
+            }
           }
           lineItems(first: 20) {
             nodes {
@@ -144,43 +130,64 @@ async function handleGetOrders(request: Request) {
           }
         }
       }
-    }`,
-    { variables: { query: searchQuery } }
+    }`
   );
 
   const json = await response.json();
-  console.log("=== GRAPHQL RESPONSE DATA ===", JSON.stringify(json));
-
   const customerNodes = json.data?.customers?.nodes || [];
-  const allRecentOrders = json.data?.allRecentOrders?.nodes || [];
+  const recentOrders = json.data?.recentOrders?.nodes || [];
 
   const map = new Map<string, any>();
 
-  // 1. Add orders from matching customers
+  // Function to check if a customer node matches the target customerId or email
+  function isCustomerMatch(cust: any) {
+    if (!cust) return false;
+
+    // 1. Email match
+    if (targetEmail && cust.email && cust.email.toLowerCase() === targetEmail) {
+      return true;
+    }
+
+    // 2. Metafield match
+    const metaValue = String(cust.customerIdMetafield?.value || "").toLowerCase();
+    if (rawId && metaValue && (metaValue === rawId || metaValue === cleanNum || metaValue === `r${cleanNum}`)) {
+      return true;
+    }
+
+    // 3. Tag match
+    const tags = (cust.tags || []).map((t: string) => t.toLowerCase());
+    if (rawId) {
+      const matchTag = tags.some((t: string) => 
+        t.includes(rawId) || 
+        t.includes(`flutter_customer_${rawId}`) || 
+        t.includes(`flutter_customer_${cleanNum}`) || 
+        t.includes(`flutter_customer_r${cleanNum}`) || 
+        t === rawId || 
+        t === cleanNum || 
+        t === `r${cleanNum}`
+      );
+      if (matchTag) return true;
+    }
+
+    return false;
+  }
+
+  // A. Check customer list and collect their orders
   for (const cust of customerNodes) {
-    const custOrders = cust.orders?.nodes || [];
-    for (const o of custOrders) {
-      if (!map.has(o.id)) {
-        map.set(o.id, o);
+    if (isCustomerMatch(cust)) {
+      const custOrders = cust.orders?.nodes || [];
+      for (const o of custOrders) {
+        if (!map.has(o.id)) {
+          map.set(o.id, o);
+        }
       }
     }
   }
 
-  // 2. Add orders directly matching customer email or tags
-  for (const o of allRecentOrders) {
-    const cust = o.customer;
-    if (cust) {
-      const matchEmail = email && cust.email && cust.email.toLowerCase() === email.toLowerCase();
-      const custTags = cust.tags || [];
-      const matchTag = custTags.some((t: string) => 
-        (rawId && t.includes(rawId)) || 
-        (cleanNum && t.includes(`R${cleanNum}`)) || 
-        (cleanNum && t.includes(cleanNum))
-      );
-
-      if ((matchEmail || matchTag) && !map.has(o.id)) {
-        map.set(o.id, o);
-      }
+  // B. Check recent store orders for matching customer info
+  for (const o of recentOrders) {
+    if (isCustomerMatch(o.customer) && !map.has(o.id)) {
+      map.set(o.id, o);
     }
   }
 
@@ -200,6 +207,8 @@ async function handleGetOrders(request: Request) {
       image_url: li.variant?.image?.url || '',
     })),
   }));
+
+  console.log(`=== ORDERS FOUND FOR CUSTOMER: count=${orders.length} ===`);
 
   return Response.json({
     success: true,
