@@ -64,7 +64,7 @@ async function handleGetOrders(request: Request) {
     const cleanNum = rawId.replace(/^r/i, "");
     const targetEmail = email.toLowerCase();
 
-    // Fetch store customers and recent orders cleanly
+    // Fetch store customers and recent orders cleanly without requesting variant (avoids read_products scope error)
     const response = await admin.graphql(
       `#graphql
       query FetchStoreOrdersAndCustomers {
@@ -107,13 +107,6 @@ async function handleGetOrders(request: Request) {
               nodes {
                 title
                 quantity
-                variant {
-                  id
-                  price
-                  image {
-                    url
-                  }
-                }
                 originalUnitPriceSet {
                   shopMoney {
                     amount
@@ -205,8 +198,8 @@ async function handleGetOrders(request: Request) {
         title: li.title,
         quantity: li.quantity,
         price: li.originalUnitPriceSet?.shopMoney ? `${li.originalUnitPriceSet.shopMoney.currencyCode === 'INR' ? '₹' : li.originalUnitPriceSet.shopMoney.currencyCode + ' '}${parseFloat(li.originalUnitPriceSet.shopMoney.amount).toFixed(2)}` : '',
-        variant_id: li.variant?.id ? li.variant.id.split('/').pop() : null,
-        image_url: li.variant?.image?.url || '',
+        variant_id: null,
+        image_url: '',
       })),
     }));
 
