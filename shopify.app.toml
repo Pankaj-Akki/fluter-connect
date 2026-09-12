@@ -1,6 +1,6 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "e21abfc566fccf991974575d334b6cb1"
+client_id = "120f4007f2dc47eaf503b48ed86148ce"
 name = "flutter-new-app"
 application_url = "https://fluter-connect.onrender.com"
 embedded = true

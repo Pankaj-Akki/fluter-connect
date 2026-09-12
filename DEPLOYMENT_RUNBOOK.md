@@ -53,7 +53,7 @@ To prevent access token conflicts and force Shopify storefront to clear its CDN 
 
 3. **Reinstall the app**:
    * Open the app installation link:
-     👉 `https://admin.shopify.com/store/orbis-3664/apps/flutter-new-app`
+     👉 `https://admin.shopify.com/store/ek1j7g-jq/apps/flutter-new-app`
    * Click **Install app** to generate a new active access token.
 
 ---
@@ -69,6 +69,6 @@ node --env-file=.env node_modules/@react-router/serve/bin.js ./build/server/inde
 ## 🧪 Step 6: Test the Integration
 Open a browser tab (or send to anyone on any PC) and load the test URL:
 ```text
-https://orbis-3664.myshopify.com/?customer_id=R458&name=John%20Doe&membership_level=Gold&email=john@email.com&source=flutter_app
+https://ek1j7g-jq.myshopify.com/?customer_id=R458&name=John%20Doe&membership_level=Gold&email=john@email.com&source=flutter_app
 ```
 Check the **Customers** page in Shopify Admin to verify the profile is created.
