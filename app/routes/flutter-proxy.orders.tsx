@@ -39,7 +39,7 @@ async function handleGetOrders(request: Request) {
     const cleanNum = rawId.replace(/^r/i, "");
     const targetEmail = email.toLowerCase();
 
-    // Fetch recent orders & customers directly without relying on complex search syntax parser
+    // Fetch store customers and recent orders cleanly
     const response = await admin.graphql(
       `#graphql
       query FetchStoreOrdersAndCustomers {
@@ -52,40 +52,6 @@ async function handleGetOrders(request: Request) {
             tags
             customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") {
               value
-            }
-            orders(first: 25, sortKey: CREATED_AT, reverse: true) {
-              nodes {
-                id
-                name
-                createdAt
-                totalPriceSet {
-                  shopMoney {
-                    amount
-                    currencyCode
-                  }
-                }
-                displayFulfillmentStatus
-                displayFinancialStatus
-                lineItems(first: 20) {
-                  nodes {
-                    title
-                    quantity
-                    variant {
-                      id
-                      price
-                      image {
-                        url
-                      }
-                    }
-                    originalUnitPriceSet {
-                      shopMoney {
-                        amount
-                        currencyCode
-                      }
-                    }
-                  }
-                }
-              }
             }
           }
         }
@@ -105,6 +71,8 @@ async function handleGetOrders(request: Request) {
             customer {
               id
               email
+              firstName
+              lastName
               tags
               customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") {
                 value
@@ -135,12 +103,17 @@ async function handleGetOrders(request: Request) {
     );
 
     const json = await response.json();
+    console.log("=== GRAPHQL ORDERS RESPONSE ===", JSON.stringify(json));
+
+    if (json.errors) {
+      console.error("=== GRAPHQL ERRORS ===", json.errors);
+      return Response.json({ success: false, errors: json.errors }, { status: 500 });
+    }
+
     const customerNodes = json.data?.customers?.nodes || [];
     const recentOrders = json.data?.recentOrders?.nodes || [];
 
-    const map = new Map<string, any>();
-
-    // Function to check if a customer node matches the target customerId or email
+    // Helper to test if a customer object matches the request params
     function isCustomerMatch(cust: any) {
       if (!cust) return false;
 
@@ -156,7 +129,7 @@ async function handleGetOrders(request: Request) {
       }
 
       // 3. Tag match
-      const tags = (cust.tags || []).map((t: string) => t.toLowerCase());
+      const tags = (cust.tags || []).map((t: string) => String(t).toLowerCase());
       if (rawId) {
         const matchTag = tags.some((t: string) => 
           t.includes(rawId) || 
@@ -173,22 +146,25 @@ async function handleGetOrders(request: Request) {
       return false;
     }
 
-    // A. Check customer list and collect their orders
+    // Collect IDs of matched customers
+    const matchedCustomerIds = new Set<string>();
     for (const cust of customerNodes) {
       if (isCustomerMatch(cust)) {
-        const custOrders = cust.orders?.nodes || [];
-        for (const o of custOrders) {
+        matchedCustomerIds.add(cust.id);
+      }
+    }
+
+    const map = new Map<string, any>();
+
+    // Collect orders matching customer criteria
+    for (const o of recentOrders) {
+      const orderCust = o.customer;
+      if (orderCust) {
+        if (matchedCustomerIds.has(orderCust.id) || isCustomerMatch(orderCust)) {
           if (!map.has(o.id)) {
             map.set(o.id, o);
           }
         }
-      }
-    }
-
-    // B. Check recent store orders for matching customer info
-    for (const o of recentOrders) {
-      if (isCustomerMatch(o.customer) && !map.has(o.id)) {
-        map.set(o.id, o);
       }
     }
 
@@ -209,7 +185,7 @@ async function handleGetOrders(request: Request) {
       })),
     }));
 
-    console.log(`=== ORDERS FOUND FOR CUSTOMER: count=${orders.length} ===`);
+    console.log(`=== MATCHED ORDERS COUNT: ${orders.length} ===`);
 
     return Response.json({
       success: true,
@@ -219,7 +195,7 @@ async function handleGetOrders(request: Request) {
       orders,
     });
   } catch (error: any) {
-    console.error("=== APP PROXY ORDERS ERROR ===", error);
+    console.error("=== APP PROXY ORDERS HANDLER ERROR ===", error);
     return Response.json(
       { success: false, message: error?.message || "Internal Server Error" },
       { status: 500 }
