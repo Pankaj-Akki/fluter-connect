@@ -144,7 +144,7 @@ async function handleCustomerSync(request: Request) {
   }
 
   // 2. Fallback: Search by Email if not found by tag
-  if (!existing && email) {
+  if (!existing && email && email.includes("@")) {
     try {
       const emailResponse = await admin.graphql(
         `#graphql
@@ -161,7 +161,7 @@ async function handleCustomerSync(request: Request) {
             }
           }
         }`,
-        { variables: { query: `email:'${email}'` } }
+        { variables: { query: `email:'${email.trim()}'` } }
       );
       const emailJson = await emailResponse.json();
       existing = emailJson.data?.customers?.nodes?.[0];
@@ -196,95 +196,73 @@ async function handleCustomerSync(request: Request) {
     if (isValidEmail) input.email = email.trim();
     if (isValidE164Phone) input.phone = phone.replace(/\s+/g, "");
 
-    try {
-      const createResponse = await admin.graphql(
-        `#graphql
-        mutation CreateFlutterCustomer($input: CustomerInput!) {
-          customerCreate(input: $input) {
-            customer {
-              id
-              firstName
-              lastName
-            }
-            userErrors {
-              field
-              message
-            }
+    const createResponse = await admin.graphql(
+      `#graphql
+      mutation CreateFlutterCustomer($input: CustomerInput!) {
+        customerCreate(input: $input) {
+          customer {
+            id
+            firstName
+            lastName
           }
-        }`,
-        { variables: { input } }
-      );
-
-      const createJson = await createResponse.json();
-      console.log("=== customerCreate GraphQL response ===", JSON.stringify(createJson));
-      const errors = createJson.data?.customerCreate?.userErrors || [];
-      if (errors.length) {
-        console.warn("=== customerCreate userErrors notice ===", errors);
-        // Fallback: Retry creating without email/phone/metafields if validation failed
-        delete input.email;
-        delete input.phone;
-        delete input.metafields;
-        const retryResp = await admin.graphql(
-          `#graphql
-          mutation CreateFlutterCustomerRetry($input: CustomerInput!) {
-            customerCreate(input: $input) {
-              customer { id firstName lastName }
-              userErrors { field message }
-            }
-          }`,
-          { variables: { input } }
-        );
-        const retryJson = await retryResp.json();
-        const retryId = retryJson.data?.customerCreate?.customer?.id;
-        if (retryId) {
-          return Response.json({
-            success: true,
-            action: "created",
-            customer_id: customerId,
-            name: name || "Customer",
-            email: email || "",
-            shopify_internal_id: retryId,
-          });
+          userErrors {
+            field
+            message
+          }
         }
-      } else if (createJson.data?.customerCreate?.customer?.id) {
-        return Response.json({
-          success: true,
-          action: "created",
-          customer_id: customerId,
-          name: name || `${firstName} ${lastName}`.trim() || "Customer",
-          email: email || "",
-          shopify_internal_id: createJson.data.customerCreate.customer.id,
-        });
-      }
-    } catch (e) {
-      console.warn("Customer create exception handled:", e);
+      }`,
+      { variables: { input } }
+    );
+
+    const createJson = await createResponse.json();
+    console.log("=== customerCreate GraphQL response ===", JSON.stringify(createJson));
+    const errors = createJson.data?.customerCreate?.userErrors || [];
+    const newId = createJson.data?.customerCreate?.customer?.id;
+
+    if (newId) {
+      return Response.json({
+        success: true,
+        action: "created",
+        customer_id: customerId,
+        name: name || `${firstName} ${lastName}`.trim() || "Customer",
+        email: email || "",
+        shopify_internal_id: newId,
+      });
     }
 
-    return Response.json({
-      success: true,
-      action: "created",
-      customer_id: customerId,
-      name: name || "Customer",
-      email: email || "",
-      message: "Customer processed",
-    });
+    // If customerCreate failed (e.g. Email taken), find by email and update!
+    if (errors.length && isValidEmail) {
+      console.warn("=== customerCreate errors, attempting fallback update by email ===", errors);
+      try {
+        const findByEmail = await admin.graphql(
+          `#graphql
+          query FindExistingByEmail($query: String!) {
+            customers(first: 1, query: $query) {
+              nodes { id firstName lastName tags }
+            }
+          }`,
+          { variables: { query: `email:'${email.trim()}'` } }
+        );
+        const findJson = await findByEmail.json();
+        existing = findJson.data?.customers?.nodes?.[0];
+      } catch (e) {}
+    }
   }
 
-  const updateInput: any = {
-    id: existing.id,
-    tags: Array.from(new Set([...(existing.tags || []), ...tagsToSet])),
-  };
-  if (metafields.length) updateInput.metafields = metafields;
+  if (existing) {
+    const updateInput: any = {
+      id: existing.id,
+      tags: Array.from(new Set([...(existing.tags || []), ...tagsToSet])),
+    };
+    if (metafields.length) updateInput.metafields = metafields;
 
-  // ONLY update firstName & lastName if a non-empty name parameter was explicitly provided
-  if (name && name.trim()) {
-    updateInput.firstName = firstName;
-    updateInput.lastName = lastName;
-  }
-  if (isValidEmail) updateInput.email = email.trim();
-  if (isValidE164Phone) updateInput.phone = phone.replace(/\s+/g, "");
+    if (name && name.trim()) {
+      updateInput.firstName = firstName;
+      updateInput.lastName = lastName;
+    }
+    if (isValidEmail) updateInput.email = email.trim();
+    if (isValidE164Phone) updateInput.phone = phone.replace(/\s+/g, "");
 
-  try {
     const updateResponse = await admin.graphql(
       `#graphql
       mutation UpdateFlutterCustomer($input: CustomerInput!) {
@@ -305,39 +283,19 @@ async function handleCustomerSync(request: Request) {
 
     const updateJson = await updateResponse.json();
     console.log("=== customerUpdate GraphQL response ===", JSON.stringify(updateJson));
-    const errors = updateJson.data?.customerUpdate?.userErrors || [];
-    if (errors.length) {
-      console.warn("=== customerUpdate userErrors notice ===", errors);
-      // Retry without email/phone/metafields if validation failed
-      delete updateInput.email;
-      delete updateInput.phone;
-      delete updateInput.metafields;
-      await admin.graphql(
-        `#graphql
-        mutation UpdateFlutterCustomerRetry($input: CustomerInput!) {
-          customerUpdate(input: $input) {
-            customer { id firstName lastName }
-            userErrors { field message }
-          }
-        }`,
-        { variables: { input: updateInput } }
-      );
-    }
-  } catch (e) {
-    console.warn("Customer update exception handled:", e);
   }
 
-  const finalName = (name && name.trim()) ? name.trim() : `${existing.firstName || ''} ${existing.lastName || ''}`.trim();
-  const finalEmail = (email && email.trim()) ? email.trim() : (existing.defaultEmailAddress?.emailAddress || "");
+  const finalName = (name && name.trim()) ? name.trim() : `${existing?.firstName || ''} ${existing?.lastName || ''}`.trim();
+  const finalEmail = (email && email.trim()) ? email.trim() : (existing?.defaultEmailAddress?.emailAddress || "");
 
   return Response.json({
     success: true,
-    action: "updated",
+    action: existing ? "updated" : "created",
     customer_id: customerId,
     name: finalName || "Customer",
     email: finalEmail,
     phone: phone || "",
-    shopify_internal_id: existing.id,
+    shopify_internal_id: existing?.id || null,
   });
 }
 
