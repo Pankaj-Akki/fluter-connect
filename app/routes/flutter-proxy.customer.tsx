@@ -128,6 +128,9 @@ async function handleCustomerSync(request: Request) {
               firstName
               lastName
               tags
+              defaultEmailAddress {
+                emailAddress
+              }
             }
           }
         }`,
@@ -152,6 +155,9 @@ async function handleCustomerSync(request: Request) {
               firstName
               lastName
               tags
+              defaultEmailAddress {
+                emailAddress
+              }
             }
           }
         }`,
@@ -164,7 +170,7 @@ async function handleCustomerSync(request: Request) {
     }
   }
 
-  const { firstName, lastName } = name ? splitName(name) : { firstName: "Customer", lastName: "" };
+  const { firstName, lastName } = name ? splitName(name) : { firstName: "", lastName: "" };
 
   const metafields: any[] = [];
   if (customerId && customerId.trim()) metafields.push({ namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId.trim() });
@@ -235,6 +241,8 @@ async function handleCustomerSync(request: Request) {
             success: true,
             action: "created",
             customer_id: customerId,
+            name: name || "Customer",
+            email: email || "",
             shopify_internal_id: retryId,
           });
         }
@@ -243,6 +251,8 @@ async function handleCustomerSync(request: Request) {
           success: true,
           action: "created",
           customer_id: customerId,
+          name: name || `${firstName} ${lastName}`.trim() || "Customer",
+          email: email || "",
           shopify_internal_id: createJson.data.customerCreate.customer.id,
         });
       }
@@ -254,6 +264,8 @@ async function handleCustomerSync(request: Request) {
       success: true,
       action: "created",
       customer_id: customerId,
+      name: name || "Customer",
+      email: email || "",
       message: "Customer processed",
     });
   }
@@ -263,7 +275,9 @@ async function handleCustomerSync(request: Request) {
     tags: Array.from(new Set([...(existing.tags || []), ...tagsToSet])),
   };
   if (metafields.length) updateInput.metafields = metafields;
-  if (name) {
+
+  // ONLY update firstName & lastName if a non-empty name parameter was explicitly provided
+  if (name && name.trim()) {
     updateInput.firstName = firstName;
     updateInput.lastName = lastName;
   }
@@ -313,12 +327,15 @@ async function handleCustomerSync(request: Request) {
     console.warn("Customer update exception handled:", e);
   }
 
+  const finalName = (name && name.trim()) ? name.trim() : `${existing.firstName || ''} ${existing.lastName || ''}`.trim();
+  const finalEmail = (email && email.trim()) ? email.trim() : (existing.defaultEmailAddress?.emailAddress || "");
+
   return Response.json({
     success: true,
     action: "updated",
     customer_id: customerId,
-    name: name || `${existing.firstName || ''} ${existing.lastName || ''}`.trim() || "Customer",
-    email: email || "",
+    name: finalName || "Customer",
+    email: finalEmail,
     phone: phone || "",
     shopify_internal_id: existing.id,
   });
