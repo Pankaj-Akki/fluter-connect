@@ -50,8 +50,10 @@ async function handleCustomerSync(request: Request) {
 
   let customerId = "";
   let name = "";
-  let membership = "";
+  let membership = "Standard";
   let email = "";
+  let phone = "";
+  let address = "";
   let source = "flutter_app";
 
   if (request.method === "POST" || request.method === "PUT") {
@@ -59,8 +61,10 @@ async function handleCustomerSync(request: Request) {
       const body = await request.json();
       customerId = String(body.customer_id || "").trim();
       name = String(body.name || "").trim();
-      membership = String(body.membership_level || "").trim();
+      membership = String(body.membership_level || "Standard").trim();
       email = body.email ? String(body.email).trim() : "";
+      phone = body.phone ? String(body.phone).trim() : "";
+      address = body.address ? String(body.address).trim() : "";
       source = String(body.source || "flutter_app").trim();
     } catch (e) {
       // Ignored: fallback to query params
@@ -68,68 +72,96 @@ async function handleCustomerSync(request: Request) {
   }
 
   // Fallback to query parameters if fields are missing (or if GET request)
-  if (!customerId || !name || !membership) {
+  if (!customerId) {
     const url = new URL(request.url);
     customerId = String(url.searchParams.get("customer_id") || "").trim();
-    name = String(url.searchParams.get("name") || "").trim();
-    membership = String(url.searchParams.get("membership_level") || "").trim();
-    email = url.searchParams.get("email") ? String(url.searchParams.get("email")).trim() : "";
-    source = String(url.searchParams.get("source") || "flutter_app").trim();
+    if (!name) name = String(url.searchParams.get("name") || "").trim();
+    if (!membership || membership === "Standard") membership = String(url.searchParams.get("membership_level") || "Standard").trim();
+    if (!email) email = String(url.searchParams.get("email") || "").trim();
+    if (!phone) phone = String(url.searchParams.get("phone") || "").trim();
+    if (!address) address = String(url.searchParams.get("address") || "").trim();
+    if (!source) source = String(url.searchParams.get("source") || "flutter_app").trim();
   }
 
-  if (!customerId || !name || !membership) {
+  if (!customerId && !email) {
     return Response.json(
-      { success: false, message: "customer_id, name and membership_level are required." },
+      { success: false, message: "customer_id or email parameter is required for customer sync." },
       { status: 400 }
     );
   }
 
-  const tag = riderTag(customerId);
-  const { firstName, lastName } = splitName(name);
+  const tag = customerId ? riderTag(customerId) : "";
+  let existing: any = null;
 
-  const searchQuery = email ? `tag:'${tag}' OR email:'${email}'` : `tag:'${tag}'`;
-
-  const searchResponse = await admin.graphql(
-    `#graphql
-    query FindFlutterCustomer($query: String!) {
-      customers(first: 2, query: $query) {
-        nodes {
-          id
-          firstName
-          lastName
-          tags
-          defaultEmailAddress {
-            emailAddress
+  // 1. Search by Tag first
+  if (tag) {
+    try {
+      const tagResponse = await admin.graphql(
+        `#graphql
+        query FindFlutterCustomerByTag($query: String!) {
+          customers(first: 1, query: $query) {
+            nodes {
+              id
+              firstName
+              lastName
+              tags
+            }
           }
-          customerId: metafield(namespace: "flutter", key: "customer_id") {
-            value
-          }
-          membership: metafield(namespace: "flutter", key: "membership_level") {
-            value
-          }
-        }
-      }
-    }`,
-    { variables: { query: searchQuery } }
-  );
+        }`,
+        { variables: { query: `tag:'${tag}'` } }
+      );
+      const tagJson = await tagResponse.json();
+      existing = tagJson.data?.customers?.nodes?.[0];
+    } catch (e) {
+      console.warn("Tag search error:", e);
+    }
+  }
 
-  const searchJson = await searchResponse.json();
-  const existing = searchJson.data?.customers?.nodes?.[0];
+  // 2. Fallback: Search by Email if not found by tag
+  if (!existing && email) {
+    try {
+      const emailResponse = await admin.graphql(
+        `#graphql
+        query FindFlutterCustomerByEmail($query: String!) {
+          customers(first: 1, query: $query) {
+            nodes {
+              id
+              firstName
+              lastName
+              tags
+            }
+          }
+        }`,
+        { variables: { query: `email:'${email}'` } }
+      );
+      const emailJson = await emailResponse.json();
+      existing = emailJson.data?.customers?.nodes?.[0];
+    } catch (e) {
+      console.warn("Email search error:", e);
+    }
+  }
 
-  const metafields = [
-    { namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId },
-    { namespace: "flutter", key: "membership_level", type: "single_line_text_field", value: membership },
-    { namespace: "flutter", key: "source", type: "single_line_text_field", value: source },
-  ];
+  const { firstName, lastName } = name ? splitName(name) : { firstName: "Customer", lastName: "" };
+
+  const metafields: any[] = [];
+  if (customerId) metafields.push({ namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId });
+  if (membership) metafields.push({ namespace: "flutter", key: "membership_level", type: "single_line_text_field", value: membership });
+  if (source) metafields.push({ namespace: "flutter", key: "source", type: "single_line_text_field", value: source });
+  if (phone) metafields.push({ namespace: "flutter", key: "phone", type: "single_line_text_field", value: phone });
+  if (address) metafields.push({ namespace: "flutter", key: "address", type: "single_line_text_field", value: address });
+
+  const tagsToSet = ["flutter_app"];
+  if (tag) tagsToSet.push(tag);
 
   if (!existing) {
     const input: any = {
-      firstName,
-      lastName,
-      tags: [tag, "flutter_app"],
+      firstName: firstName || "Customer",
+      lastName: lastName || "",
+      tags: tagsToSet,
       metafields,
     };
     if (email) input.email = email;
+    if (phone) input.phone = phone;
 
     const createResponse = await admin.graphql(
       `#graphql
@@ -161,18 +193,21 @@ async function handleCustomerSync(request: Request) {
       success: true,
       action: "created",
       customer_id: customerId,
-      shopify_internal_id: createJson.data.customerCreate.customer.id,
+      shopify_internal_id: createJson.data?.customerCreate?.customer?.id,
     });
   }
 
   const updateInput: any = {
     id: existing.id,
-    firstName,
-    lastName,
-    tags: Array.from(new Set([...(existing.tags || []), tag, "flutter_app"])),
+    tags: Array.from(new Set([...(existing.tags || []), ...tagsToSet])),
     metafields,
   };
+  if (name) {
+    updateInput.firstName = firstName;
+    updateInput.lastName = lastName;
+  }
   if (email) updateInput.email = email;
+  if (phone) updateInput.phone = phone;
 
   const updateResponse = await admin.graphql(
     `#graphql
