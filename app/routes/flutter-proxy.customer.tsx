@@ -167,11 +167,11 @@ async function handleCustomerSync(request: Request) {
   const { firstName, lastName } = name ? splitName(name) : { firstName: "Customer", lastName: "" };
 
   const metafields: any[] = [];
-  if (customerId) metafields.push({ namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId });
-  if (membership) metafields.push({ namespace: "flutter", key: "membership_level", type: "single_line_text_field", value: membership });
-  if (source) metafields.push({ namespace: "flutter", key: "source", type: "single_line_text_field", value: source });
-  if (phone) metafields.push({ namespace: "flutter", key: "phone", type: "single_line_text_field", value: phone });
-  if (address) metafields.push({ namespace: "flutter", key: "address", type: "single_line_text_field", value: address });
+  if (customerId && customerId.trim()) metafields.push({ namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId.trim() });
+  if (membership && membership.trim()) metafields.push({ namespace: "flutter", key: "membership_level", type: "single_line_text_field", value: membership.trim() });
+  if (source && source.trim()) metafields.push({ namespace: "flutter", key: "source", type: "single_line_text_field", value: source.trim() });
+  if (phone && phone.trim()) metafields.push({ namespace: "flutter", key: "phone", type: "single_line_text_field", value: phone.trim() });
+  if (address && address.trim()) metafields.push({ namespace: "flutter", key: "address", type: "single_line_text_field", value: address.trim() });
 
   const tagsToSet = ["flutter_app"];
   if (tag) tagsToSet.push(tag);
@@ -185,38 +185,39 @@ async function handleCustomerSync(request: Request) {
       firstName: firstName || "Customer",
       lastName: lastName || "",
       tags: tagsToSet,
-      metafields,
     };
+    if (metafields.length) input.metafields = metafields;
     if (isValidEmail) input.email = email.trim();
     if (isValidE164Phone) input.phone = phone.replace(/\s+/g, "");
 
-    const createResponse = await admin.graphql(
-      `#graphql
-      mutation CreateFlutterCustomer($input: CustomerInput!) {
-        customerCreate(input: $input) {
-          customer {
-            id
-            firstName
-            lastName
+    try {
+      const createResponse = await admin.graphql(
+        `#graphql
+        mutation CreateFlutterCustomer($input: CustomerInput!) {
+          customerCreate(input: $input) {
+            customer {
+              id
+              firstName
+              lastName
+            }
+            userErrors {
+              field
+              message
+            }
           }
-          userErrors {
-            field
-            message
-          }
-        }
-      }`,
-      { variables: { input } }
-    );
+        }`,
+        { variables: { input } }
+      );
 
-    const createJson = await createResponse.json();
-    console.log("=== customerCreate GraphQL response ===", JSON.stringify(createJson));
-    const errors = createJson.data?.customerCreate?.userErrors || [];
-    if (errors.length) {
-      console.warn("=== customerCreate userErrors notice ===", errors);
-      // Fallback: If email or phone failed validation, retry creating without email/phone
-      if (input.email || input.phone) {
+      const createJson = await createResponse.json();
+      console.log("=== customerCreate GraphQL response ===", JSON.stringify(createJson));
+      const errors = createJson.data?.customerCreate?.userErrors || [];
+      if (errors.length) {
+        console.warn("=== customerCreate userErrors notice ===", errors);
+        // Fallback: Retry creating without email/phone/metafields if validation failed
         delete input.email;
         delete input.phone;
+        delete input.metafields;
         const retryResp = await admin.graphql(
           `#graphql
           mutation CreateFlutterCustomerRetry($input: CustomerInput!) {
@@ -237,29 +238,31 @@ async function handleCustomerSync(request: Request) {
             shopify_internal_id: retryId,
           });
         }
+      } else if (createJson.data?.customerCreate?.customer?.id) {
+        return Response.json({
+          success: true,
+          action: "created",
+          customer_id: customerId,
+          shopify_internal_id: createJson.data.customerCreate.customer.id,
+        });
       }
-    } else if (createJson.data?.customerCreate?.customer?.id) {
-      return Response.json({
-        success: true,
-        action: "created",
-        customer_id: customerId,
-        shopify_internal_id: createJson.data.customerCreate.customer.id,
-      });
+    } catch (e) {
+      console.warn("Customer create exception handled:", e);
     }
 
     return Response.json({
       success: true,
       action: "created",
       customer_id: customerId,
-      message: "Customer record processed",
+      message: "Customer processed",
     });
   }
 
   const updateInput: any = {
     id: existing.id,
     tags: Array.from(new Set([...(existing.tags || []), ...tagsToSet])),
-    metafields,
   };
+  if (metafields.length) updateInput.metafields = metafields;
   if (name) {
     updateInput.firstName = firstName;
     updateInput.lastName = lastName;
@@ -267,33 +270,34 @@ async function handleCustomerSync(request: Request) {
   if (isValidEmail) updateInput.email = email.trim();
   if (isValidE164Phone) updateInput.phone = phone.replace(/\s+/g, "");
 
-  const updateResponse = await admin.graphql(
-    `#graphql
-    mutation UpdateFlutterCustomer($input: CustomerInput!) {
-      customerUpdate(input: $input) {
-        customer {
-          id
-          firstName
-          lastName
+  try {
+    const updateResponse = await admin.graphql(
+      `#graphql
+      mutation UpdateFlutterCustomer($input: CustomerInput!) {
+        customerUpdate(input: $input) {
+          customer {
+            id
+            firstName
+            lastName
+          }
+          userErrors {
+            field
+            message
+          }
         }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    { variables: { input: updateInput } }
-  );
+      }`,
+      { variables: { input: updateInput } }
+    );
 
-  const updateJson = await updateResponse.json();
-  console.log("=== customerUpdate GraphQL response ===", JSON.stringify(updateJson));
-  const errors = updateJson.data?.customerUpdate?.userErrors || [];
-  if (errors.length) {
-    console.warn("=== customerUpdate userErrors notice ===", errors);
-    // Retry without problematic email/phone field if invalid
-    if (updateInput.email || updateInput.phone) {
+    const updateJson = await updateResponse.json();
+    console.log("=== customerUpdate GraphQL response ===", JSON.stringify(updateJson));
+    const errors = updateJson.data?.customerUpdate?.userErrors || [];
+    if (errors.length) {
+      console.warn("=== customerUpdate userErrors notice ===", errors);
+      // Retry without email/phone/metafields if validation failed
       delete updateInput.email;
       delete updateInput.phone;
+      delete updateInput.metafields;
       await admin.graphql(
         `#graphql
         mutation UpdateFlutterCustomerRetry($input: CustomerInput!) {
@@ -305,6 +309,8 @@ async function handleCustomerSync(request: Request) {
         { variables: { input: updateInput } }
       );
     }
+  } catch (e) {
+    console.warn("Customer update exception handled:", e);
   }
 
   return Response.json({
