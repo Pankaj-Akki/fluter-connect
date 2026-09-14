@@ -239,6 +239,9 @@ async function handleCustomerSync(request: Request) {
     success: true,
     action: "updated",
     customer_id: customerId,
+    name: `${firstName} ${lastName}`.trim(),
+    email: email,
+    phone: phone,
     shopify_internal_id: existing.id,
   });
 }
