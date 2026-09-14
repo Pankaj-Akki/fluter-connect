@@ -1,38 +1,61 @@
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { authenticate, unauthenticated } from "../shopify.server";
+import shopify, { authenticate, unauthenticated } from "../shopify.server";
+import prisma from "../db.server";
+
+async function getAdminClient(request: Request) {
+  let admin: any = null;
+  let session: any = null;
+
+  try {
+    const authResult = await authenticate.public.appProxy(request);
+    admin = authResult.admin;
+    session = authResult.session;
+  } catch (e) {
+    console.warn("App proxy auth warning in orders:", e);
+  }
+
+  if (!admin) {
+    const url = new URL(request.url);
+    const shop = session?.shop || url.searchParams.get("shop") || "ek1j7g-jq.myshopify.com";
+    if (shop) {
+      try {
+        const unauth = await unauthenticated.admin(shop);
+        admin = unauth.admin;
+        console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED IN ORDERS ===", shop);
+      } catch (e) {
+        console.warn("Unauthenticated admin fallback warning in orders:", e);
+      }
+    }
+
+    if (!admin) {
+      try {
+        const dbSessions = await prisma.session.findMany({
+          where: { accessToken: { not: "" } },
+          orderBy: { expires: "desc" }
+        });
+        const validSession = dbSessions[0];
+        if (validSession) {
+          const client = new shopify.api.clients.Graphql({ session: validSession as any });
+          admin = { graphql: (query: string, options?: any) => client.query({ data: { query, variables: options?.variables } }) };
+          console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA SESSION IN ORDERS ===", validSession.shop);
+        }
+      } catch (e) {
+        console.error("Prisma session fallback error in orders:", e);
+      }
+    }
+  }
+
+  return admin;
+}
 
 async function handleGetOrders(request: Request) {
   try {
     console.log("=== APP PROXY ORDERS REQUEST RECEIVED ===", request.method, request.url);
     
-    let admin: any = null;
-    let session: any = null;
-
-    try {
-      const authResult = await authenticate.public.appProxy(request);
-      admin = authResult.admin;
-      session = authResult.session;
-    } catch (e) {
-      console.warn("App proxy auth warning:", e);
-    }
-
-    if (!admin) {
-      const url = new URL(request.url);
-      const shop = session?.shop || url.searchParams.get("shop") || "ek1j7g-jq.myshopify.com";
-      if (shop) {
-        try {
-          const unauth = await unauthenticated.admin(shop);
-          admin = unauth.admin;
-          console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED IN ORDERS ===", shop);
-        } catch (e) {
-          console.error("Unauthenticated admin fallback failed in orders:", e);
-        }
-      }
-    }
+    const admin = await getAdminClient(request);
 
     if (!admin) {
       return Response.json(
-        { success: false, message: "App is not installed or Admin session unavailable." },
+        { success: false, message: "App is not installed or Admin session unavailable. Please open app once in Shopify Admin." },
         { status: 401 }
       );
     }

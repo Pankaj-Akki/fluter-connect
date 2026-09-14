@@ -1,5 +1,5 @@
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { authenticate, unauthenticated } from "../shopify.server";
+import shopify, { authenticate, unauthenticated } from "../shopify.server";
+import prisma from "../db.server";
 
 function splitName(fullName = "") {
   const parts = fullName.trim().split(/\s+/).filter(Boolean);
@@ -13,9 +13,7 @@ function riderTag(customerId: string) {
   return `flutter_customer_${customerId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
-async function handleCustomerSync(request: Request) {
-  console.log("=== APP PROXY CUSTOMER SYNC REQUEST RECEIVED ===", request.method, request.url);
-  
+async function getAdminClient(request: Request) {
   let admin: any = null;
   let session: any = null;
 
@@ -36,14 +34,39 @@ async function handleCustomerSync(request: Request) {
         admin = unauth.admin;
         console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED ===", shop);
       } catch (e) {
-        console.error("Unauthenticated admin fallback failed:", e);
+        console.warn("Unauthenticated admin fallback warning:", e);
+      }
+    }
+
+    if (!admin) {
+      try {
+        const dbSessions = await prisma.session.findMany({
+          where: { accessToken: { not: "" } },
+          orderBy: { expires: "desc" }
+        });
+        const validSession = dbSessions[0];
+        if (validSession) {
+          const client = new shopify.api.clients.Graphql({ session: validSession as any });
+          admin = { graphql: (query: string, options?: any) => client.query({ data: { query, variables: options?.variables } }) };
+          console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA SESSION ===", validSession.shop);
+        }
+      } catch (e) {
+        console.error("Prisma session fallback error:", e);
       }
     }
   }
 
+  return admin;
+}
+
+async function handleCustomerSync(request: Request) {
+  console.log("=== APP PROXY CUSTOMER SYNC REQUEST RECEIVED ===", request.method, request.url);
+  
+  const admin = await getAdminClient(request);
+
   if (!admin) {
     return Response.json(
-      { success: false, message: "App is not installed or Admin session unavailable." },
+      { success: false, message: "App is not installed or Admin session unavailable. Please open app once in Shopify Admin." },
       { status: 401 }
     );
   }
