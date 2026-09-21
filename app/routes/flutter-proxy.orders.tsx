@@ -109,6 +109,10 @@ async function handleGetOrders(request: Request) {
             id
             name
             createdAt
+            customAttributes {
+              key
+              value
+            }
             totalPriceSet {
               shopMoney {
                 amount
@@ -195,10 +199,44 @@ async function handleGetOrders(request: Request) {
     // Collect orders matching customer criteria
     for (const o of recentOrders) {
       const orderCust = o.customer;
-      if (orderCust) {
-        if (matchedCustomerIds.has(orderCust.id) || isCustomerMatch(orderCust)) {
-          if (!map.has(o.id)) {
-            map.set(o.id, o);
+      
+      // Check customAttributes on order (e.g. note_attributes added at checkout)
+      let matchesOrderAttr = false;
+      if (rawId && Array.isArray(o.customAttributes)) {
+        matchesOrderAttr = o.customAttributes.some((attr: any) => 
+          attr.key === "customer_id" && String(attr.value || "").toLowerCase().includes(cleanNum)
+        );
+      }
+
+      if (matchesOrderAttr || (orderCust && (matchedCustomerIds.has(orderCust.id) || isCustomerMatch(orderCust)))) {
+        if (!map.has(o.id)) {
+          map.set(o.id, o);
+        }
+
+        // Auto-tag checkout customer if matched via customAttributes or email
+        if (orderCust && rawId) {
+          const expectedTag = `flutter_customer_${rawId.replace(/[^a-z0-9_-]/g, "_")}`;
+          const currentTags = (orderCust.tags || []).map((t: string) => String(t).toLowerCase());
+          if (!currentTags.includes(expectedTag)) {
+            admin.graphql(
+              `#graphql
+              mutation AutoTagCheckoutCust($input: CustomerInput!) {
+                customerUpdate(input: $input) {
+                  customer { id tags }
+                }
+              }`,
+              {
+                variables: {
+                  input: {
+                    id: orderCust.id,
+                    tags: Array.from(new Set([...(orderCust.tags || []), "flutter_app", expectedTag])),
+                    metafields: [
+                      { namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId }
+                    ]
+                  }
+                }
+              }
+            ).catch((err: any) => console.warn("Auto-tag checkout customer warning:", err));
           }
         }
       }

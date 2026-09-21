@@ -118,13 +118,14 @@ async function handleCustomerSync(request: Request) {
     const tag = customerId ? riderTag(customerId) : "";
     let existing: any = null;
 
+    let allTagNodes: any[] = [];
     // 1. Search by Tag first
     if (tag) {
       try {
         const tagResponse = await admin.graphql(
           `#graphql
           query FindFlutterCustomerByTag($query: String!) {
-            customers(first: 1, query: $query) {
+            customers(first: 10, query: $query) {
               nodes {
                 id
                 firstName
@@ -139,7 +140,9 @@ async function handleCustomerSync(request: Request) {
           { variables: { query: `tag:'${tag}'` } }
         );
         const tagJson = await tagResponse.json();
-        existing = tagJson.data?.customers?.nodes?.[0];
+        allTagNodes = tagJson.data?.customers?.nodes || [];
+        // Prefer node that has a real name (not Swiggy Rider or empty) or has email
+        existing = allTagNodes.find((n: any) => n.firstName && !n.firstName.toLowerCase().includes("swiggy")) || allTagNodes[0];
       } catch (e) {
         console.warn("Tag search error:", e);
       }
@@ -151,7 +154,7 @@ async function handleCustomerSync(request: Request) {
         const emailResponse = await admin.graphql(
           `#graphql
           query FindFlutterCustomerByEmail($query: String!) {
-            customers(first: 1, query: $query) {
+            customers(first: 10, query: $query) {
               nodes {
                 id
                 firstName
