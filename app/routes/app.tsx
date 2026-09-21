@@ -4,9 +4,33 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+
+  if (session?.shop && session?.accessToken) {
+    try {
+      await prisma.session.upsert({
+        where: { id: `offline_${session.shop}` },
+        update: {
+          accessToken: session.accessToken,
+          expires: null,
+          isOnline: false,
+        },
+        create: {
+          id: `offline_${session.shop}`,
+          shop: session.shop,
+          state: session.state || "",
+          isOnline: false,
+          accessToken: session.accessToken,
+        },
+      });
+      console.log("=== UPSERTED OFFLINE SESSION IN PRISMA DB ===", session.shop);
+    } catch (e) {
+      console.warn("Failed to upsert offline session:", e);
+    }
+  }
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };

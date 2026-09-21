@@ -26,20 +26,30 @@ function isPlaceholderName(str = "") {
   );
 }
 
-async function createCustomAdminClient(shop: string, accessToken: string) {
-  return {
-    graphql: async (query: string, options?: any) => {
-      const res = await fetch(`https://${shop}/admin/api/2026-07/graphql.json`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": accessToken,
-        },
-        body: JSON.stringify({ query, variables: options?.variables }),
-      });
-      return res;
+async function testAndGetAdminClient(shop: string, accessToken: string) {
+  try {
+    const client = {
+      graphql: async (query: string, options?: any) => {
+        const res = await fetch(`https://${shop}/admin/api/2026-07/graphql.json`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": accessToken,
+          },
+          body: JSON.stringify({ query, variables: options?.variables }),
+        });
+        return res;
+      }
+    };
+    const testRes = await client.graphql(`{ shop { id } }`);
+    if (testRes.status === 200) {
+      const testJson = await testRes.json();
+      if (!testJson.errors && testJson.data?.shop?.id) {
+        return client;
+      }
     }
-  };
+  } catch (e) {}
+  return null;
 }
 
 async function getAdminClient(request: Request) {
@@ -48,8 +58,16 @@ async function getAdminClient(request: Request) {
 
   try {
     const authResult = await authenticate.public.appProxy(request);
-    admin = authResult.admin;
-    session = authResult.session;
+    if (authResult.admin) {
+      const testRes = await authResult.admin.graphql(`{ shop { id } }`);
+      if (testRes.status === 200) {
+        const testJson: any = await testRes.json();
+        if (!testJson.errors && testJson.data?.shop?.id) {
+          admin = authResult.admin;
+          session = authResult.session;
+        }
+      }
+    }
   } catch (e) {
     console.warn("App proxy auth warning:", e);
   }
@@ -60,8 +78,16 @@ async function getAdminClient(request: Request) {
   if (!admin && shop) {
     try {
       const unauth = await unauthenticated.admin(shop);
-      admin = unauth.admin;
-      console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED ===", shop);
+      if (unauth?.admin) {
+        const testRes = await unauth.admin.graphql(`{ shop { id } }`);
+        if (testRes.status === 200) {
+          const testJson: any = await testRes.json();
+          if (!testJson.errors && testJson.data?.shop?.id) {
+            admin = unauth.admin;
+            console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED ===", shop);
+          }
+        }
+      }
     } catch (e) {
       console.warn("Unauthenticated admin fallback warning:", e);
     }
@@ -75,11 +101,12 @@ async function getAdminClient(request: Request) {
       });
       for (const validSession of dbSessions) {
         if (validSession.accessToken && validSession.shop) {
-          try {
-            admin = await createCustomAdminClient(validSession.shop, validSession.accessToken);
+          const testedClient = await testAndGetAdminClient(validSession.shop, validSession.accessToken);
+          if (testedClient) {
+            admin = testedClient;
             console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA ACCESSTOKEN ===", validSession.shop);
             break;
-          } catch (err) {}
+          }
         }
       }
     } catch (e) {
@@ -88,8 +115,10 @@ async function getAdminClient(request: Request) {
   }
 
   if (!admin && process.env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
-    admin = await createCustomAdminClient(shop, process.env.SHOPIFY_ADMIN_ACCESS_TOKEN);
-    console.log("=== RECOVERED ADMIN VIA SHOPIFY_ADMIN_ACCESS_TOKEN ENV ===");
+    admin = await testAndGetAdminClient(shop, process.env.SHOPIFY_ADMIN_ACCESS_TOKEN);
+    if (admin) {
+      console.log("=== RECOVERED ADMIN VIA SHOPIFY_ADMIN_ACCESS_TOKEN ENV ===");
+    }
   }
 
   return admin;
