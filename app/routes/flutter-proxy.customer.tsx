@@ -45,11 +45,15 @@ async function getAdminClient(request: Request) {
           where: { accessToken: { not: "" } },
           orderBy: { expires: "desc" }
         });
-        const validSession = dbSessions[0];
-        if (validSession) {
-          const unauth = await unauthenticated.admin(validSession.shop);
-          admin = unauth.admin;
-          console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA SESSION ===", validSession.shop);
+        for (const validSession of dbSessions) {
+          try {
+            const unauth = await unauthenticated.admin(validSession.shop);
+            if (unauth?.admin) {
+              admin = unauth.admin;
+              console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA SESSION ===", validSession.shop);
+              break;
+            }
+          } catch (err) {}
         }
       } catch (e) {
         console.error("Prisma session fallback error:", e);
@@ -68,8 +72,8 @@ async function handleCustomerSync(request: Request) {
 
     if (!admin) {
       return Response.json(
-        { success: false, message: "App is not installed or Admin session unavailable. Please open app once in Shopify Admin." },
-        { status: 401 }
+        { success: false, message: "App session unavailable. Please open app once in Shopify Admin." },
+        { status: 200 }
       );
     }
 
@@ -111,7 +115,7 @@ async function handleCustomerSync(request: Request) {
     if (!customerId && !email) {
       return Response.json(
         { success: false, message: "customer_id or email parameter is required for customer sync." },
-        { status: 400 }
+        { status: 200 }
       );
     }
 
@@ -304,9 +308,16 @@ async function handleCustomerSync(request: Request) {
     });
   } catch (error: any) {
     console.error("=== APP PROXY CUSTOMER SYNC ERROR ===", error);
+    const errMsg = String(error?.message || "");
+    if (errMsg.includes("Unauthorized") || errMsg.includes("401")) {
+      return Response.json(
+        { success: false, message: "Shopify session expired. Please open app once in Shopify Admin." },
+        { status: 200 }
+      );
+    }
     return Response.json(
       { success: false, message: error?.message || "Internal Server Error" },
-      { status: 500 }
+      { status: 200 }
     );
   }
 }

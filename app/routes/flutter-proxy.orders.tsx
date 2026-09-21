@@ -56,8 +56,8 @@ async function handleGetOrders(request: Request) {
 
     if (!admin) {
       return Response.json(
-        { success: false, message: "App is not installed or Admin session unavailable. Please open app once in Shopify Admin." },
-        { status: 401 }
+        { success: false, message: "App session unavailable. Please open app once in Shopify Admin." },
+        { status: 200 }
       );
     }
 
@@ -80,7 +80,7 @@ async function handleGetOrders(request: Request) {
     if (!customerId && !email) {
       return Response.json(
         { success: false, message: "customer_id or email parameter is required." },
-        { status: 400 }
+        { status: 200 }
       );
     }
 
@@ -272,7 +272,7 @@ async function handleGetOrders(request: Request) {
     console.error("=== APP PROXY ORDERS HANDLER ERROR ===", error);
     return Response.json(
       { success: false, message: error?.message || "Internal Server Error" },
-      { status: 500 }
+      { status: 200 }
     );
   }
 }
