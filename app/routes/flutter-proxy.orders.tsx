@@ -2,6 +2,22 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import shopify, { authenticate, unauthenticated } from "../shopify.server";
 import prisma from "../db.server";
 
+async function createCustomAdminClient(shop: string, accessToken: string) {
+  return {
+    graphql: async (query: string, options?: any) => {
+      const res = await fetch(`https://${shop}/admin/api/2026-07/graphql.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": accessToken,
+        },
+        body: JSON.stringify({ query, variables: options?.variables }),
+      });
+      return res;
+    }
+  };
+}
+
 async function getAdminClient(request: Request) {
   let admin: any = null;
   let session: any = null;
@@ -14,35 +30,42 @@ async function getAdminClient(request: Request) {
     console.warn("App proxy auth warning in orders:", e);
   }
 
-  if (!admin) {
-    const url = new URL(request.url);
-    const shop = session?.shop || url.searchParams.get("shop") || "ek1j7g-jq.myshopify.com";
-    if (shop) {
-      try {
-        const unauth = await unauthenticated.admin(shop);
-        admin = unauth.admin;
-        console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED IN ORDERS ===", shop);
-      } catch (e) {
-        console.warn("Unauthenticated admin fallback warning in orders:", e);
-      }
-    }
+  const url = new URL(request.url);
+  const shop = session?.shop || url.searchParams.get("shop") || "ek1j7g-jq.myshopify.com";
 
-    if (!admin) {
-      try {
-        const dbSessions = await prisma.session.findMany({
-          where: { accessToken: { not: "" } },
-          orderBy: { expires: "desc" }
-        });
-        const validSession = dbSessions[0];
-        if (validSession) {
-          const unauth = await unauthenticated.admin(validSession.shop);
-          admin = unauth.admin;
-          console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA SESSION IN ORDERS ===", validSession.shop);
-        }
-      } catch (e) {
-        console.error("Prisma session fallback error in orders:", e);
-      }
+  if (!admin && shop) {
+    try {
+      const unauth = await unauthenticated.admin(shop);
+      admin = unauth.admin;
+      console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA UNAUTHENTICATED IN ORDERS ===", shop);
+    } catch (e) {
+      console.warn("Unauthenticated admin fallback warning in orders:", e);
     }
+  }
+
+  if (!admin) {
+    try {
+      const dbSessions = await prisma.session.findMany({
+        where: { accessToken: { not: "" } },
+        orderBy: { expires: "desc" }
+      });
+      for (const validSession of dbSessions) {
+        if (validSession.accessToken && validSession.shop) {
+          try {
+            admin = await createCustomAdminClient(validSession.shop, validSession.accessToken);
+            console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA ACCESSTOKEN IN ORDERS ===", validSession.shop);
+            break;
+          } catch (err) {}
+        }
+      }
+    } catch (e) {
+      console.error("Prisma session fallback error in orders:", e);
+    }
+  }
+
+  if (!admin && process.env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
+    admin = await createCustomAdminClient(shop, process.env.SHOPIFY_ADMIN_ACCESS_TOKEN);
+    console.log("=== RECOVERED ADMIN VIA SHOPIFY_ADMIN_ACCESS_TOKEN ENV IN ORDERS ===");
   }
 
   return admin;
