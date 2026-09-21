@@ -1,3 +1,4 @@
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import shopify, { authenticate, unauthenticated } from "../shopify.server";
 import prisma from "../db.server";
 
@@ -34,8 +35,8 @@ async function getAdminClient(request: Request) {
         });
         const validSession = dbSessions[0];
         if (validSession) {
-          const client = new shopify.api.clients.Graphql({ session: validSession as any });
-          admin = { graphql: (query: string, options?: any) => client.query({ data: { query, variables: options?.variables } }) };
+          const unauth = await unauthenticated.admin(validSession.shop);
+          admin = unauth.admin;
           console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA DIRECT PRISMA SESSION IN ORDERS ===", validSession.shop);
         }
       } catch (e) {
