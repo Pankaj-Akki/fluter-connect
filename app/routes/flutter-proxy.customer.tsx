@@ -14,6 +14,18 @@ function riderTag(customerId: string) {
   return `flutter_customer_${customerId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
+function isPlaceholderName(str = "") {
+  const lower = str.trim().toLowerCase();
+  if (!lower) return true;
+  return (
+    lower === "swiggy" ||
+    lower === "swiggy rider" ||
+    lower.startsWith("swiggy rider") ||
+    lower === "customer" ||
+    lower === "user"
+  );
+}
+
 async function createCustomAdminClient(shop: string, accessToken: string) {
   return {
     graphql: async (query: string, options?: any) => {
@@ -284,7 +296,13 @@ async function handleCustomerSync(request: Request) {
       };
       if (metafields.length) updateInput.metafields = metafields;
 
-      if (name && name.trim()) {
+      const existingName = `${existing.firstName || ''} ${existing.lastName || ''}`.trim();
+      const existingIsPlaceholder = isPlaceholderName(existingName);
+      const incomingIsPlaceholder = isPlaceholderName(name);
+
+      // Only update name if incoming name is NOT a placeholder (e.g. real name like Akshydeep)
+      // OR if existing customer name is currently a placeholder (e.g. Swiggy Rider)
+      if (name && name.trim() && (!incomingIsPlaceholder || existingIsPlaceholder)) {
         updateInput.firstName = firstName;
         updateInput.lastName = lastName;
       }
@@ -313,14 +331,23 @@ async function handleCustomerSync(request: Request) {
       console.log("=== customerUpdate GraphQL response ===", JSON.stringify(updateJson));
     }
 
-    const finalName = (name && name.trim()) ? name.trim() : `${existing?.firstName || ''} ${existing?.lastName || ''}`.trim();
+    const existingName = `${existing?.firstName || ''} ${existing?.lastName || ''}`.trim();
+    let finalName = "";
+    if (existingName && !isPlaceholderName(existingName)) {
+      finalName = existingName;
+    } else if (name && name.trim() && !isPlaceholderName(name)) {
+      finalName = name.trim();
+    } else {
+      finalName = existingName || name.trim() || "Customer";
+    }
+
     const finalEmail = (email && email.trim()) ? email.trim() : (existing?.defaultEmailAddress?.emailAddress || "");
 
     return Response.json({
       success: true,
       action: existing ? "updated" : "created",
       customer_id: customerId,
-      name: finalName || "Customer",
+      name: finalName,
       email: finalEmail,
       phone: phone || "",
       shopify_internal_id: existing?.id || null,
