@@ -283,8 +283,63 @@ async function handleCustomerSync(request: Request) {
       if (!primaryNode) {
         primaryNode = allFoundNodes[0];
       }
+    }
 
-      // Delete/untag any duplicate customer nodes so ONLY 1 CUSTOMER RECORD EXISTS in Shopify Admin
+    // Fallback: Check recent orders if tag/email search did not find a node with a real name
+    const currentPrimaryName = `${primaryNode?.firstName || ""} ${primaryNode?.lastName || ""}`.trim();
+    if (customerId && (!primaryNode || isPlaceholderName(currentPrimaryName))) {
+      try {
+        const cleanNum = customerId.toLowerCase().replace(/^r/i, "");
+        const ordersRes = await admin.graphql(
+          `#graphql
+          query FindCustomerFromRecentOrders {
+            recentOrders: orders(first: 20, sortKey: CREATED_AT, reverse: true) {
+              nodes {
+                customAttributes { key value }
+                customer {
+                  id
+                  firstName
+                  lastName
+                  numberOfOrders
+                  defaultEmailAddress { emailAddress }
+                }
+              }
+            }
+          }`
+        );
+        const ordersJson = await ordersRes.json();
+        const ordersList = ordersJson.data?.recentOrders?.nodes || [];
+        for (const o of ordersList) {
+          const custAttr = o.customAttributes || [];
+          const matchAttr = custAttr.some((attr: any) => 
+            attr.key === "customer_id" && String(attr.value || "").toLowerCase().includes(cleanNum)
+          );
+          if (matchAttr && o.customer && o.customer.id) {
+            const custName = `${o.customer.firstName || ''} ${o.customer.lastName || ''}`.trim();
+            if (custName && !isPlaceholderName(custName)) {
+              console.log("=== RECOVERED REAL CUSTOMER FROM RECENT ORDERS ===", o.customer.id, custName);
+              if (primaryNode && primaryNode.id !== o.customer.id) {
+                // Delete duplicate 0-order node
+                admin.graphql(
+                  `#graphql
+                  mutation DeletePlaceholderNode($input: CustomerDeleteInput!) {
+                    customerDelete(input: $input) { deletedCustomerId }
+                  }`,
+                  { variables: { input: { id: primaryNode.id } } }
+                ).catch(() => {});
+              }
+              primaryNode = o.customer;
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Order customer search error:", e);
+      }
+    }
+
+    // Delete/untag any duplicate customer nodes so ONLY 1 CUSTOMER RECORD EXISTS in Shopify Admin
+    if (primaryNode && allFoundNodes.length > 0) {
       const duplicateNodes = allFoundNodes.filter((n: any) => n.id !== primaryNode.id);
       for (const dup of duplicateNodes) {
         try {
