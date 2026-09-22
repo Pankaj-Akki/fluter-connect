@@ -10,6 +10,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
   if (session?.shop && session?.accessToken) {
+    console.log("==========================================================================");
+    console.log("=== COPY THIS TOKEN TO RENDER ENV AS SHOPIFY_ADMIN_ACCESS_TOKEN ===");
+    console.log(`SHOPIFY_ADMIN_ACCESS_TOKEN=${session.accessToken}`);
+    console.log("==========================================================================");
+
     try {
       await prisma.session.upsert({
         where: { id: `offline_${session.shop}` },
