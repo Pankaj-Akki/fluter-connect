@@ -181,6 +181,20 @@ async function handleCancelOrder(admin: any, orderIdOrName: string, reason = "CU
   }
 }
 
+const NO_CACHE_HEADERS = {
+  "Content-Type": "application/json",
+  "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0, s-maxage=0",
+  "Pragma": "no-cache",
+  "Expires": "0",
+};
+
+function jsonNoCache(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: NO_CACHE_HEADERS,
+  });
+}
+
 async function handleGetOrders(request: Request) {
   try {
     console.log("=== APP PROXY ORDERS REQUEST RECEIVED ===", request.method, request.url);
@@ -188,9 +202,9 @@ async function handleGetOrders(request: Request) {
     const admin = await getAdminClient(request);
 
     if (!admin) {
-      return Response.json(
+      return jsonNoCache(
         { success: false, message: "App session unavailable. Please open app once in Shopify Admin." },
-        { status: 200 }
+        200
       );
     }
 
@@ -217,19 +231,19 @@ async function handleGetOrders(request: Request) {
     // Handle Cancel Action
     if (action === "cancel" || request.method === "DELETE") {
       if (!orderId) {
-        return Response.json(
+        return jsonNoCache(
           { success: false, message: "order_id parameter is required to cancel an order." },
-          { status: 200 }
+          200
         );
       }
       const cancelResult = await handleCancelOrder(admin, orderId);
-      return Response.json(cancelResult, { status: 200 });
+      return jsonNoCache(cancelResult, 200);
     }
 
     if (!customerId && !email) {
-      return Response.json(
+      return jsonNoCache(
         { success: false, message: "customer_id or email parameter is required." },
-        { status: 200 }
+        200
       );
     }
 
@@ -298,7 +312,7 @@ async function handleGetOrders(request: Request) {
 
     if (json.errors) {
       console.error("=== GRAPHQL ERRORS ===", json.errors);
-      return Response.json({ success: false, errors: json.errors }, { status: 500 });
+      return jsonNoCache({ success: false, errors: json.errors }, 500);
     }
 
     const customerNodes = json.data?.customers?.nodes || [];
@@ -422,7 +436,7 @@ async function handleGetOrders(request: Request) {
 
     console.log(`=== MATCHED ORDERS COUNT: ${orders.length} ===`);
 
-    return Response.json({
+    return jsonNoCache({
       success: true,
       customer_id: customerId,
       email: email,
@@ -431,9 +445,9 @@ async function handleGetOrders(request: Request) {
     });
   } catch (error: any) {
     console.error("=== APP PROXY ORDERS HANDLER ERROR ===", error);
-    return Response.json(
+    return jsonNoCache(
       { success: false, message: error?.message || "Internal Server Error" },
-      { status: 200 }
+      200
     );
   }
 }

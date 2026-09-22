@@ -77,7 +77,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             }
           }
 
-          // 2. Find any previously created customer record for this flutter customer_id (e.g. Swiggy Rider) and update their name/email to match checkout!
+          // 2. Find any previously created duplicate customer records for this flutter customer_id (e.g. Swiggy Rider) and delete/untag them so ONLY 1 customer record exists in Shopify Admin!
           try {
             const findResponse = await admin.graphql(
               `#graphql
@@ -88,6 +88,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                     firstName
                     lastName
                     tags
+                    numberOfOrders
                   }
                 }
               }`,
@@ -95,33 +96,76 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             );
             const findJson = await findResponse.json();
             const nodes = findJson.data?.customers?.nodes || [];
+            const checkoutGid = checkoutCustomer?.id ? `gid://shopify/Customer/${checkoutCustomer.id}` : null;
 
             for (const node of nodes) {
-              const updateInput: any = {
-                id: node.id,
-                tags: Array.from(new Set([...(node.tags || []), ...tagsToSet])),
-              };
-              if (checkoutFirstName) updateInput.firstName = checkoutFirstName;
-              if (checkoutLastName) updateInput.lastName = checkoutLastName;
-              if (checkoutEmail && checkoutEmail.includes("@")) updateInput.email = checkoutEmail;
-              if (checkoutPhone && /^\+[1-9]\d{7,14}$/.test(checkoutPhone.replace(/\s+/g, ""))) {
-                updateInput.phone = checkoutPhone.replace(/\s+/g, "");
-              }
+              if (checkoutGid && node.id === checkoutGid) {
+                // Update checkout customer name & details
+                const updateInput: any = {
+                  id: node.id,
+                  tags: Array.from(new Set([...(node.tags || []), ...tagsToSet])),
+                };
+                if (checkoutFirstName) updateInput.firstName = checkoutFirstName;
+                if (checkoutLastName) updateInput.lastName = checkoutLastName;
+                if (checkoutEmail && checkoutEmail.includes("@")) updateInput.email = checkoutEmail;
+                if (checkoutPhone && /^\+[1-9]\d{7,14}$/.test(checkoutPhone.replace(/\s+/g, ""))) {
+                  updateInput.phone = checkoutPhone.replace(/\s+/g, "");
+                }
 
-              await admin.graphql(
-                `#graphql
-                mutation SyncFlutterCustomerDetails($input: CustomerInput!) {
-                  customerUpdate(input: $input) {
-                    customer { id firstName lastName email }
-                    userErrors { field message }
+                await admin.graphql(
+                  `#graphql
+                  mutation SyncCheckoutCustomerDetails($input: CustomerInput!) {
+                    customerUpdate(input: $input) {
+                      customer { id firstName lastName email }
+                      userErrors { field message }
+                    }
+                  }`,
+                  { variables: { input: updateInput } }
+                );
+              } else if (checkoutGid && node.id !== checkoutGid) {
+                // Delete duplicate 0-order placeholder customer node created before checkout!
+                try {
+                  const delRes = await admin.graphql(
+                    `#graphql
+                    mutation DeleteDupInWebhook($input: CustomerDeleteInput!) {
+                      customerDelete(input: $input) {
+                        deletedCustomerId
+                        userErrors { field message }
+                      }
+                    }`,
+                    { variables: { input: { id: node.id } } }
+                  );
+                  const delJson = await delRes.json();
+                  console.log("=== WEBHOOK DELETED DUPLICATE CUSTOMER RECORD ===", node.id, JSON.stringify(delJson));
+
+                  const delErrors = delJson.data?.customerDelete?.userErrors || [];
+                  if (delErrors.length > 0) {
+                    const remainingTags = (node.tags || []).filter((t: string) => !t.startsWith("flutter_customer_") && t !== "flutter_app");
+                    await admin.graphql(
+                      `#graphql
+                      mutation UntagDupInWebhook($input: CustomerInput!) {
+                        customerUpdate(input: $input) {
+                          customer { id tags }
+                        }
+                      }`,
+                      {
+                        variables: {
+                          input: {
+                            id: node.id,
+                            tags: remainingTags,
+                          }
+                        }
+                      }
+                    );
+                    console.log("=== WEBHOOK UNTAGGED DUPLICATE CUSTOMER RECORD ===", node.id);
                   }
-                }`,
-                { variables: { input: updateInput } }
-              );
-              console.log("=== UPDATED FLUTTER CUSTOMER NAME & DETAILS ===", node.id, checkoutFirstName);
+                } catch (delErr) {
+                  console.warn("Webhook delete duplicate error:", delErr);
+                }
+              }
             }
           } catch (err) {
-            console.warn("Error syncing flutter customer details:", err);
+            console.warn("Error syncing flutter customer details in webhook:", err);
           }
         } else if (checkoutEmail && checkoutEmail.includes("@")) {
           // If no customer_id in note_attributes, attempt lookup by checkout email
