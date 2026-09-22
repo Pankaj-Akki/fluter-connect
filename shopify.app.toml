@@ -6,7 +6,7 @@ application_url = "https://fluter-connect.onrender.com"
 embedded = true
 
 [access_scopes]
-scopes = "read_customers,read_orders,read_products,write_app_proxy,write_customers"
+scopes = "read_customers,read_orders,write_orders,read_products,write_app_proxy,write_customers"
 
 [app_proxy]
 url = "/flutter-proxy"

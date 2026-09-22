@@ -100,6 +100,87 @@ async function getAdminClient(request: Request) {
   return admin;
 }
 
+async function handleCancelOrder(admin: any, orderIdOrName: string, reason = "CUSTOMER") {
+  let orderGid = orderIdOrName.trim();
+  
+  if (!orderGid.startsWith("gid://shopify/Order/")) {
+    if (/^\d+$/.test(orderGid)) {
+      orderGid = `gid://shopify/Order/${orderGid}`;
+    } else {
+      try {
+        const findRes = await admin.graphql(
+          `#graphql
+          query FindOrderByName($query: String!) {
+            orders(first: 1, query: $query) {
+              nodes { id name cancelledAt displayFulfillmentStatus }
+            }
+          }`,
+          { variables: { query: `name:'${orderGid}'` } }
+        );
+        const findJson = await findRes.json();
+        const node = findJson.data?.orders?.nodes?.[0];
+        if (node?.id) {
+          orderGid = node.id;
+        }
+      } catch (e) {
+        console.warn("Find order by name error:", e);
+      }
+    }
+  }
+
+  console.log("=== EXECUTING ORDER CANCEL ===", orderGid);
+
+  try {
+    const cancelRes = await admin.graphql(
+      `#graphql
+      mutation CancelOrder($orderId: ID!, $reason: OrderCancelReason!) {
+        orderCancel(orderId: $orderId, reason: $reason, restock: true, refund: true) {
+          orderCancelUserErrors {
+            field
+            message
+            code
+          }
+          job {
+            id
+            done
+          }
+        }
+      }`,
+      {
+        variables: {
+          orderId: orderGid,
+          reason: reason || "CUSTOMER"
+        }
+      }
+    );
+
+    const cancelJson = await cancelRes.json();
+    console.log("=== ORDER CANCEL GRAPHQL RESPONSE ===", JSON.stringify(cancelJson));
+
+    const userErrors = cancelJson.data?.orderCancel?.orderCancelUserErrors || [];
+    if (userErrors.length > 0) {
+      return {
+        success: false,
+        message: userErrors[0].message || "Failed to cancel order.",
+        errors: userErrors
+      };
+    }
+
+    return {
+      success: true,
+      message: "Order cancelled successfully.",
+      order_id: orderGid,
+      display_fulfillment_status: "CANCELLED"
+    };
+  } catch (err: any) {
+    console.error("=== ORDER CANCEL ERROR ===", err);
+    return {
+      success: false,
+      message: err?.message || "Failed to execute order cancel."
+    };
+  }
+}
+
 async function handleGetOrders(request: Request) {
   try {
     console.log("=== APP PROXY ORDERS REQUEST RECEIVED ===", request.method, request.url);
@@ -116,18 +197,34 @@ async function handleGetOrders(request: Request) {
     const url = new URL(request.url);
     let customerId = (url.searchParams.get("customer_id") || "").trim();
     let email = (url.searchParams.get("email") || "").trim();
+    let action = (url.searchParams.get("action") || "").trim().toLowerCase();
+    let orderId = (url.searchParams.get("order_id") || url.searchParams.get("id") || "").trim();
 
-    if (request.method === "POST" || request.method === "PUT") {
+    if (request.method === "POST" || request.method === "PUT" || request.method === "DELETE") {
       try {
         const body = await request.json();
         if (!customerId) customerId = String(body.customer_id || "").trim();
         if (!email) email = String(body.email || "").trim();
+        if (!action) action = String(body.action || "").trim().toLowerCase();
+        if (!orderId) orderId = String(body.order_id || body.id || "").trim();
       } catch (e) {
         // Ignored
       }
     }
 
-    console.log(`=== ORDERS PROXY INPUT: customerId="${customerId}", email="${email}" ===`);
+    console.log(`=== ORDERS PROXY INPUT: customerId="${customerId}", email="${email}", action="${action}", orderId="${orderId}" ===`);
+
+    // Handle Cancel Action
+    if (action === "cancel" || request.method === "DELETE") {
+      if (!orderId) {
+        return Response.json(
+          { success: false, message: "order_id parameter is required to cancel an order." },
+          { status: 200 }
+        );
+      }
+      const cancelResult = await handleCancelOrder(admin, orderId);
+      return Response.json(cancelResult, { status: 200 });
+    }
 
     if (!customerId && !email) {
       return Response.json(
@@ -140,7 +237,7 @@ async function handleGetOrders(request: Request) {
     const cleanNum = rawId.replace(/^r/i, "");
     const targetEmail = email.toLowerCase();
 
-    // Minimal GraphQL query avoiding any variant or restricted product fields
+    // GraphQL query fetching orders with cancellation fields
     const response = await admin.graphql(
       `#graphql
       query FetchStoreOrdersAndCustomers {
@@ -161,6 +258,8 @@ async function handleGetOrders(request: Request) {
             id
             name
             createdAt
+            cancelledAt
+            cancelReason
             customAttributes {
               key
               value
@@ -294,22 +393,32 @@ async function handleGetOrders(request: Request) {
       }
     }
 
-    const orders = Array.from(map.values()).map((o: any) => ({
-      id: o.id,
-      name: o.name,
-      created_at: o.createdAt,
-      total_price: o.totalPriceSet?.shopMoney ? `${o.totalPriceSet.shopMoney.currencyCode === 'INR' ? '₹' : o.totalPriceSet.shopMoney.currencyCode + ' '}${parseFloat(o.totalPriceSet.shopMoney.amount).toFixed(2)}` : '',
-      total_amount: o.totalPriceSet?.shopMoney?.amount || '0.00',
-      fulfillment_status: (o.displayFulfillmentStatus || 'Processing').toUpperCase(),
-      financial_status: o.displayFinancialStatus || '',
-      line_items: (o.lineItems?.nodes || []).map((li: any) => ({
-        title: li.title,
-        quantity: li.quantity,
-        price: '',
-        variant_id: null,
-        image_url: '',
-      })),
-    }));
+    const orders = Array.from(map.values()).map((o: any) => {
+      const isCancelled = Boolean(o.cancelledAt);
+      const displayFulfillment = isCancelled
+        ? "CANCELLED"
+        : (o.displayFulfillmentStatus || "PROCESSING").toUpperCase();
+
+      return {
+        id: o.id,
+        name: o.name,
+        created_at: o.createdAt,
+        cancelled_at: o.cancelledAt || null,
+        cancel_reason: o.cancelReason || null,
+        can_cancel: !isCancelled && o.displayFulfillmentStatus !== "FULFILLED",
+        total_price: o.totalPriceSet?.shopMoney ? `${o.totalPriceSet.shopMoney.currencyCode === 'INR' ? '₹' : o.totalPriceSet.shopMoney.currencyCode + ' '}${parseFloat(o.totalPriceSet.shopMoney.amount).toFixed(2)}` : '',
+        total_amount: o.totalPriceSet?.shopMoney?.amount || '0.00',
+        fulfillment_status: displayFulfillment,
+        financial_status: o.displayFinancialStatus || '',
+        line_items: (o.lineItems?.nodes || []).map((li: any) => ({
+          title: li.title,
+          quantity: li.quantity,
+          price: '',
+          variant_id: null,
+          image_url: '',
+        })),
+      };
+    });
 
     console.log(`=== MATCHED ORDERS COUNT: ${orders.length} ===`);
 
