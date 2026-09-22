@@ -4,21 +4,22 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  if (session?.accessToken) {
-    (globalThis as any).__SHOPIFY_ADMIN_TOKEN__ = session.accessToken;
+  const accessToken = session?.accessToken || "";
+  if (accessToken) {
+    (globalThis as any).__SHOPIFY_ADMIN_TOKEN__ = accessToken;
     console.log("==================================================");
     console.log("🔑 SHOPIFY_ADMIN_ACCESS_TOKEN FOR RENDER ENV:");
-    console.log(session.accessToken);
+    console.log(accessToken);
     console.log("==================================================");
   }
-  return null;
+  return { accessToken };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -91,6 +92,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
+  const loaderData = useLoaderData<typeof loader>();
+  const accessToken = loaderData?.accessToken || "";
   const fetcher = useFetcher<typeof action>();
 
   const shopify = useAppBridge();
@@ -107,31 +110,16 @@ export default function Index() {
   const generateProduct = () => fetcher.submit({}, { method: "POST" });
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
-
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
+    <s-page heading="Flutter Connect Dashboard">
+      <s-section heading="🔑 Permanent Render Setup Token">
         <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
+          Copy this Access Token below and paste it into your <strong>Render Dashboard &rarr; Environment</strong> as <code>SHOPIFY_ADMIN_ACCESS_TOKEN</code> to permanently prevent free-plan session resets:
         </s-paragraph>
+        <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued" style={{ marginTop: "12px", wordBreak: "break-all" }}>
+          <pre style={{ margin: 0, fontSize: "14px", fontWeight: "bold", color: "#008060", userSelect: "all" }}>
+            <code>{accessToken || "Loading token..."}</code>
+          </pre>
+        </s-box>
       </s-section>
       <s-section heading="Get started with products">
         <s-paragraph>
