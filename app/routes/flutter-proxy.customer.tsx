@@ -18,11 +18,16 @@ function isPlaceholderName(str = "") {
   const lower = str.trim().toLowerCase();
   if (!lower) return true;
   return (
-    lower === "swiggy" ||
-    lower === "swiggy rider" ||
-    lower.startsWith("swiggy rider") ||
+    lower.includes("swiggy") ||
+    lower.includes("zomato") ||
     lower === "customer" ||
-    lower === "user"
+    lower === "user" ||
+    lower === "guest" ||
+    lower === "rider" ||
+    lower === "dummy" ||
+    lower === "test" ||
+    lower === "null" ||
+    lower === "undefined"
   );
 }
 
@@ -180,9 +185,8 @@ async function handleCustomerSync(request: Request) {
     }
 
     const tag = customerId ? riderTag(customerId) : "";
-    let existing: any = null;
-
     let allTagNodes: any[] = [];
+
     // 1. Search by Tag first
     if (tag) {
       try {
@@ -205,15 +209,14 @@ async function handleCustomerSync(request: Request) {
         );
         const tagJson = await tagResponse.json();
         allTagNodes = tagJson.data?.customers?.nodes || [];
-        // Prefer node that has a real name (not Swiggy Rider or empty) or has email
-        existing = allTagNodes.find((n: any) => n.firstName && !n.firstName.toLowerCase().includes("swiggy")) || allTagNodes[0];
       } catch (e) {
         console.warn("Tag search error:", e);
       }
     }
 
-    // 2. Fallback: Search by Email if not found by tag
-    if (!existing && email && email.includes("@")) {
+    // 2. Search by Email if provided
+    let emailNodes: any[] = [];
+    if (email && email.includes("@")) {
       try {
         const emailResponse = await admin.graphql(
           `#graphql
@@ -233,13 +236,50 @@ async function handleCustomerSync(request: Request) {
           { variables: { query: `email:'${email.trim()}'` } }
         );
         const emailJson = await emailResponse.json();
-        existing = emailJson.data?.customers?.nodes?.[0];
+        emailNodes = emailJson.data?.customers?.nodes || [];
       } catch (e) {
         console.warn("Email search error:", e);
       }
     }
 
-    const { firstName, lastName } = name ? splitName(name) : { firstName: "", lastName: "" };
+    // Combine all unique customer nodes
+    const nodeMap = new Map<string, any>();
+    for (const node of [...allTagNodes, ...emailNodes]) {
+      if (node && node.id) {
+        nodeMap.set(node.id, node);
+      }
+    }
+    const allFoundNodes = Array.from(nodeMap.values());
+
+    // Find if any existing node already has a real (non-placeholder) name
+    const realNode = allFoundNodes.find((n: any) => {
+      const nodeFullName = `${n.firstName || ""} ${n.lastName || ""}`.trim();
+      return nodeFullName && !isPlaceholderName(nodeFullName);
+    });
+
+    const incomingIsPlaceholder = isPlaceholderName(name);
+
+    let targetFirstName = "";
+    let targetLastName = "";
+
+    if (name && name.trim() && !incomingIsPlaceholder) {
+      // Incoming name parameter is a real name (e.g. Akshydeep Sharma or Pankaj)
+      const parsed = splitName(name);
+      targetFirstName = parsed.firstName;
+      targetLastName = parsed.lastName;
+    } else if (realNode) {
+      // Preserve existing real name from Shopify Admin
+      targetFirstName = realNode.firstName || "";
+      targetLastName = realNode.lastName || "";
+    } else if (name && name.trim()) {
+      // Fallback to incoming name parameter if no real name exists anywhere yet
+      const parsed = splitName(name);
+      targetFirstName = parsed.firstName;
+      targetLastName = parsed.lastName;
+    } else {
+      targetFirstName = "Customer";
+      targetLastName = "";
+    }
 
     const metafields: any[] = [];
     if (customerId && customerId.trim()) metafields.push({ namespace: "flutter", key: "customer_id", type: "single_line_text_field", value: customerId.trim() });
@@ -251,14 +291,14 @@ async function handleCustomerSync(request: Request) {
     const tagsToSet = ["flutter_app"];
     if (tag) tagsToSet.push(tag);
 
-    // Validate E.164 phone format for native Shopify customer.phone field
     const isValidE164Phone = phone && /^\+[1-9]\d{7,14}$/.test(phone.replace(/\s+/g, ""));
     const isValidEmail = email && email.includes("@") && email.trim().length > 3;
 
-    if (!existing) {
+    if (allFoundNodes.length === 0) {
+      // Create new customer
       const input: any = {
-        firstName: firstName || "Customer",
-        lastName: lastName || "",
+        firstName: targetFirstName,
+        lastName: targetLastName,
         tags: tagsToSet,
       };
       if (metafields.length) input.metafields = metafields;
@@ -269,15 +309,8 @@ async function handleCustomerSync(request: Request) {
         `#graphql
         mutation CreateFlutterCustomer($input: CustomerInput!) {
           customerCreate(input: $input) {
-            customer {
-              id
-              firstName
-              lastName
-            }
-            userErrors {
-              field
-              message
-            }
+            customer { id firstName lastName }
+            userErrors { field message }
           }
         }`,
         { variables: { input } }
@@ -285,101 +318,75 @@ async function handleCustomerSync(request: Request) {
 
       const createJson = await createResponse.json();
       console.log("=== customerCreate GraphQL response ===", JSON.stringify(createJson));
-      const errors = createJson.data?.customerCreate?.userErrors || [];
       const newId = createJson.data?.customerCreate?.customer?.id;
 
-      if (newId) {
-        return Response.json({
-          success: true,
-          action: "created",
-          customer_id: customerId,
-          name: name || `${firstName} ${lastName}`.trim() || "Customer",
-          email: email || "",
-          shopify_internal_id: newId,
-        });
-      }
-
-      // If customerCreate failed (e.g. Email taken), find by email and update!
-      if (errors.length && isValidEmail) {
-        console.warn("=== customerCreate errors, attempting fallback update by email ===", errors);
-        try {
-          const findByEmail = await admin.graphql(
-            `#graphql
-            query FindExistingByEmail($query: String!) {
-              customers(first: 1, query: $query) {
-                nodes { id firstName lastName tags }
-              }
-            }`,
-            { variables: { query: `email:'${email.trim()}'` } }
-          );
-          const findJson = await findByEmail.json();
-          existing = findJson.data?.customers?.nodes?.[0];
-        } catch (e) {}
-      }
+      const finalNameStr = `${targetFirstName} ${targetLastName}`.trim() || "Customer";
+      return Response.json({
+        success: true,
+        action: "created",
+        customer_id: customerId,
+        name: finalNameStr,
+        email: email || "",
+        phone: phone || "",
+        shopify_internal_id: newId || null,
+      });
     }
 
-    if (existing) {
+    // Update ALL found customer nodes!
+    const targetIsPlaceholder = isPlaceholderName(`${targetFirstName} ${targetLastName}`.trim());
+
+    for (const node of allFoundNodes) {
+      const nodeFullName = `${node.firstName || ""} ${node.lastName || ""}`.trim();
+      const nodeIsPlaceholder = isPlaceholderName(nodeFullName);
+
       const updateInput: any = {
-        id: existing.id,
-        tags: Array.from(new Set([...(existing.tags || []), ...tagsToSet])),
+        id: node.id,
+        tags: Array.from(new Set([...(node.tags || []), ...tagsToSet])),
       };
       if (metafields.length) updateInput.metafields = metafields;
 
-      const existingName = `${existing.firstName || ''} ${existing.lastName || ''}`.trim();
-      const existingIsPlaceholder = isPlaceholderName(existingName);
-      const incomingIsPlaceholder = isPlaceholderName(name);
-
-      // Only update name if incoming name is NOT a placeholder (e.g. real name like Akshydeep)
-      // OR if existing customer name is currently a placeholder (e.g. Swiggy Rider)
-      if (name && name.trim() && (!incomingIsPlaceholder || existingIsPlaceholder)) {
-        updateInput.firstName = firstName;
-        updateInput.lastName = lastName;
+      // Update name if target is NOT a placeholder (e.g. Akshydeep)
+      // OR if target is placeholder but node currently has NO name or empty placeholder
+      if (!targetIsPlaceholder || nodeIsPlaceholder) {
+        updateInput.firstName = targetFirstName;
+        updateInput.lastName = targetLastName;
       }
-      if (isValidEmail) updateInput.email = email.trim();
-      if (isValidE164Phone) updateInput.phone = phone.replace(/\s+/g, "");
 
-      const updateResponse = await admin.graphql(
-        `#graphql
-        mutation UpdateFlutterCustomer($input: CustomerInput!) {
-          customerUpdate(input: $input) {
-            customer {
-              id
-              firstName
-              lastName
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }`,
-        { variables: { input: updateInput } }
-      );
+      if (isValidEmail && !node.defaultEmailAddress?.emailAddress) {
+        updateInput.email = email.trim();
+      }
+      if (isValidE164Phone) {
+        updateInput.phone = phone.replace(/\s+/g, "");
+      }
 
-      const updateJson = await updateResponse.json();
-      console.log("=== customerUpdate GraphQL response ===", JSON.stringify(updateJson));
+      try {
+        await admin.graphql(
+          `#graphql
+          mutation UpdateFlutterCustomer($input: CustomerInput!) {
+            customerUpdate(input: $input) {
+              customer { id firstName lastName }
+              userErrors { field message }
+            }
+          }`,
+          { variables: { input: updateInput } }
+        );
+      } catch (err) {
+        console.warn("customerUpdate node error:", err);
+      }
     }
 
-    const existingName = `${existing?.firstName || ''} ${existing?.lastName || ''}`.trim();
-    let finalName = "";
-    if (existingName && !isPlaceholderName(existingName)) {
-      finalName = existingName;
-    } else if (name && name.trim() && !isPlaceholderName(name)) {
-      finalName = name.trim();
-    } else {
-      finalName = existingName || name.trim() || "Customer";
-    }
-
-    const finalEmail = (email && email.trim()) ? email.trim() : (existing?.defaultEmailAddress?.emailAddress || "");
+    const finalNameStr = `${targetFirstName} ${targetLastName}`.trim() || "Customer";
+    const primaryNode = realNode || allFoundNodes[0];
+    const finalEmailStr = (email && email.trim()) ? email.trim() : (primaryNode?.defaultEmailAddress?.emailAddress || "");
 
     return Response.json({
       success: true,
-      action: existing ? "updated" : "created",
+      action: "updated",
       customer_id: customerId,
-      name: finalName,
-      email: finalEmail,
+      name: finalNameStr,
+      email: finalEmailStr,
       phone: phone || "",
-      shopify_internal_id: existing?.id || null,
+      shopify_internal_id: primaryNode?.id || null,
     });
   } catch (error: any) {
     console.error("=== APP PROXY CUSTOMER SYNC ERROR ===", error);
