@@ -133,6 +133,13 @@ async function getAdminClient(request: Request) {
     }
   }
 
+  if (!admin && (globalThis as any).__SHOPIFY_ADMIN_TOKEN__) {
+    admin = await testAndGetAdminClient(shop, (globalThis as any).__SHOPIFY_ADMIN_TOKEN__);
+    if (admin) {
+      console.log("=== RECOVERED ADMIN VIA GLOBAL MEMORY TOKEN ===");
+    }
+  }
+
   if (!admin && process.env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
     admin = await testAndGetAdminClient(shop, process.env.SHOPIFY_ADMIN_ACCESS_TOKEN);
     if (admin) {
