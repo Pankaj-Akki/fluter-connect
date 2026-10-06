@@ -115,8 +115,8 @@ export default function Index() {
         <s-paragraph>
           Copy this Access Token below and paste it into your <strong>Render Dashboard &rarr; Environment</strong> as <code>SHOPIFY_ADMIN_ACCESS_TOKEN</code> to permanently prevent free-plan session resets:
         </s-paragraph>
-        <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued" style={{ marginTop: "12px", wordBreak: "break-all" }}>
-          <pre style={{ margin: 0, fontSize: "14px", fontWeight: "bold", color: "#008060", userSelect: "all" }}>
+        <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+          <pre style={{ margin: 0, marginTop: "12px", wordBreak: "break-all", fontSize: "14px", fontWeight: "bold", color: "#008060", userSelect: "all" }}>
             <code>{accessToken || "Loading token..."}</code>
           </pre>
         </s-box>

@@ -24,7 +24,7 @@ async function testAndGetAdminClient(shop: string, accessToken: string) {
         return client;
       }
     }
-  } catch (e) {}
+  } catch (e) { }
   return null;
 }
 
@@ -109,7 +109,7 @@ async function getAdminClient(request: Request) {
 
 async function handleCancelOrder(admin: any, orderIdOrName: string, reason = "CUSTOMER") {
   let orderGid = orderIdOrName.trim();
-  
+
   if (!orderGid.startsWith("gid://shopify/Order/")) {
     if (/^\d+$/.test(orderGid)) {
       orderGid = `gid://shopify/Order/${orderGid}`;
@@ -205,7 +205,7 @@ function jsonNoCache(data: any, status = 200) {
 async function handleGetOrders(request: Request) {
   try {
     console.log("=== APP PROXY ORDERS REQUEST RECEIVED ===", request.method, request.url);
-    
+
     const admin = await getAdminClient(request);
 
     if (!admin) {
@@ -258,11 +258,32 @@ async function handleGetOrders(request: Request) {
     const cleanNum = rawId.replace(/^r/i, "");
     const targetEmail = email.toLowerCase();
 
-    // GraphQL query fetching orders with cancellation fields
+    // Construct targeted search terms for Shopify GraphQL query
+    const orderSearchTerms: string[] = [];
+    const customerSearchTerms: string[] = [];
+
+    if (cleanNum) {
+      orderSearchTerms.push(`"${cleanNum}"`);
+      orderSearchTerms.push(`"flutter_customer_${cleanNum}"`);
+      customerSearchTerms.push(`tag:flutter_customer_${cleanNum}`);
+      customerSearchTerms.push(`tag:${cleanNum}`);
+      customerSearchTerms.push(`tag:flutter_customer_r${cleanNum}`);
+      customerSearchTerms.push(`"${cleanNum}"`);
+    }
+
+    if (targetEmail && targetEmail.includes("@")) {
+      orderSearchTerms.push(`email:"${targetEmail}"`);
+      customerSearchTerms.push(`email:"${targetEmail}"`);
+    }
+
+    const orderQuery = orderSearchTerms.length ? orderSearchTerms.join(" OR ") : null;
+    const customerQuery = customerSearchTerms.length ? customerSearchTerms.join(" OR ") : null;
+
+    // GraphQL query fetching orders with cancellation fields and targeted searches
     const response = await admin.graphql(
       `#graphql
-      query FetchStoreOrdersAndCustomers {
-        customers(first: 50) {
+      query FetchStoreOrdersAndCustomers($orderQuery: String, $customerQuery: String) {
+        searchedCustomers: customers(first: 20, query: $customerQuery) {
           nodes {
             id
             email
@@ -272,6 +293,42 @@ async function handleGetOrders(request: Request) {
             customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") {
               value
             }
+            orders(first: 50, sortKey: CREATED_AT, reverse: true) {
+              nodes {
+                id
+                name
+                createdAt
+                cancelledAt
+                cancelReason
+                customAttributes { key value }
+                totalPriceSet { shopMoney { amount currencyCode } }
+                displayFulfillmentStatus
+                displayFinancialStatus
+                customer {
+                  id email firstName lastName tags
+                  customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") { value }
+                }
+                lineItems(first: 20) { nodes { title quantity } }
+              }
+            }
+          }
+        }
+        searchedOrders: orders(first: 50, query: $orderQuery, sortKey: CREATED_AT, reverse: true) {
+          nodes {
+            id
+            name
+            createdAt
+            cancelledAt
+            cancelReason
+            customAttributes { key value }
+            totalPriceSet { shopMoney { amount currencyCode } }
+            displayFulfillmentStatus
+            displayFinancialStatus
+            customer {
+              id email firstName lastName tags
+              customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") { value }
+            }
+            lineItems(first: 20) { nodes { title quantity } }
           }
         }
         recentOrders: orders(first: 50, sortKey: CREATED_AT, reverse: true) {
@@ -281,37 +338,24 @@ async function handleGetOrders(request: Request) {
             createdAt
             cancelledAt
             cancelReason
-            customAttributes {
-              key
-              value
-            }
-            totalPriceSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
+            customAttributes { key value }
+            totalPriceSet { shopMoney { amount currencyCode } }
             displayFulfillmentStatus
             displayFinancialStatus
             customer {
-              id
-              email
-              firstName
-              lastName
-              tags
-              customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") {
-                value
-              }
+              id email firstName lastName tags
+              customerIdMetafield: metafield(namespace: "flutter", key: "customer_id") { value }
             }
-            lineItems(first: 20) {
-              nodes {
-                title
-                quantity
-              }
-            }
+            lineItems(first: 20) { nodes { title quantity } }
           }
         }
-      }`
+      }`,
+      {
+        variables: {
+          orderQuery: orderQuery || undefined,
+          customerQuery: customerQuery || undefined,
+        }
+      }
     );
 
     const json = await response.json();
@@ -322,8 +366,17 @@ async function handleGetOrders(request: Request) {
       return jsonNoCache({ success: false, errors: json.errors }, 500);
     }
 
-    const customerNodes = json.data?.customers?.nodes || [];
-    const recentOrders = json.data?.recentOrders?.nodes || [];
+    const searchedCustomerNodes = json.data?.searchedCustomers?.nodes || [];
+    const searchedOrderNodes = json.data?.searchedOrders?.nodes || [];
+    const recentOrdersNodes = json.data?.recentOrders?.nodes || [];
+
+    // Collect all customer nodes from search & recent orders
+    const allCustomerNodes: any[] = [...searchedCustomerNodes];
+    for (const o of [...searchedOrderNodes, ...recentOrdersNodes]) {
+      if (o.customer) {
+        allCustomerNodes.push(o.customer);
+      }
+    }
 
     // Helper to test if a customer object matches the request params
     function isCustomerMatch(cust: any) {
@@ -343,13 +396,13 @@ async function handleGetOrders(request: Request) {
       // 3. Tag match
       const tags = (cust.tags || []).map((t: string) => String(t).toLowerCase());
       if (rawId) {
-        const matchTag = tags.some((t: string) => 
-          t.includes(rawId) || 
-          t.includes(`flutter_customer_${rawId}`) || 
-          t.includes(`flutter_customer_${cleanNum}`) || 
-          t.includes(`flutter_customer_r${cleanNum}`) || 
-          t === rawId || 
-          t === cleanNum || 
+        const matchTag = tags.some((t: string) =>
+          t.includes(rawId) ||
+          t.includes(`flutter_customer_${rawId}`) ||
+          t.includes(`flutter_customer_${cleanNum}`) ||
+          t.includes(`flutter_customer_r${cleanNum}`) ||
+          t === rawId ||
+          t === cleanNum ||
           t === `r${cleanNum}`
         );
         if (matchTag) return true;
@@ -360,23 +413,36 @@ async function handleGetOrders(request: Request) {
 
     // Collect IDs of matched customers
     const matchedCustomerIds = new Set<string>();
-    for (const cust of customerNodes) {
+    for (const cust of allCustomerNodes) {
       if (isCustomerMatch(cust)) {
         matchedCustomerIds.add(cust.id);
       }
     }
 
+    // Collect all order nodes from searched customers' orders, searched orders, and recent orders
+    const allOrderCandidates: any[] = [];
+    for (const cust of searchedCustomerNodes) {
+      if (cust.orders?.nodes) {
+        allOrderCandidates.push(...cust.orders.nodes);
+      }
+    }
+    allOrderCandidates.push(...searchedOrderNodes);
+    allOrderCandidates.push(...recentOrdersNodes);
+
     const map = new Map<string, any>();
 
     // Collect orders matching customer criteria
-    for (const o of recentOrders) {
+    for (const o of allOrderCandidates) {
       const orderCust = o.customer;
-      
+
       // Check customAttributes on order (e.g. note_attributes added at checkout)
       let matchesOrderAttr = false;
       if (rawId && Array.isArray(o.customAttributes)) {
-        matchesOrderAttr = o.customAttributes.some((attr: any) => 
-          attr.key === "customer_id" && String(attr.value || "").toLowerCase().includes(cleanNum)
+        matchesOrderAttr = o.customAttributes.some((attr: any) =>
+          (attr.key === "customer_id" || attr.key === "flutter_customer_id") &&
+          (String(attr.value || "").toLowerCase() === cleanNum ||
+           String(attr.value || "").toLowerCase() === rawId ||
+           String(attr.value || "").toLowerCase().includes(cleanNum))
         );
       }
 
