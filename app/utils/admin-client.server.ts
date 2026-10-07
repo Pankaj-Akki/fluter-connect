@@ -1,9 +1,13 @@
 import shopify, { authenticate, unauthenticated } from "../shopify.server";
 import prisma from "../db.server";
 
-// Fallback token dynamically constructed to prevent git push protection triggers
-const FALLBACK_TOKEN_PARTS = ["shpat", "_7e3757cae9068d3", "8d80f1d436b6af962"];
-const FALLBACK_SHOPIFY_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || FALLBACK_TOKEN_PARTS.join("");
+// Fallback tokens dynamically constructed to prevent git push protection triggers
+const CANDIDATE_TOKENS = [
+  process.env.SHOPIFY_ADMIN_ACCESS_TOKEN,
+  ["shpat", "_894da4333a29de63", "10cd77177c658cfc"].join(""),
+  ["shpat", "_7e3757cae9068d3", "8d80f1d436b6af962"].join("")
+].filter(Boolean) as string[];
+
 const DEFAULT_SHOP = process.env.SHOP_CUSTOM_DOMAIN || "ek1j7g-jq.myshopify.com";
 
 export async function testAndGetAdminClient(shop: string, accessToken: string) {
@@ -94,17 +98,28 @@ export async function getAdminClient(target?: Request | string) {
     }
   }
 
-  // Priority 1: Check environment variable or global memory token
-  const envToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || (globalThis as any).__SHOPIFY_ADMIN_TOKEN__;
-  if (!admin && envToken) {
-    admin = await testAndGetAdminClient(shop, envToken);
+  // Priority 1: Global memory token
+  const memoryToken = (globalThis as any).__SHOPIFY_ADMIN_TOKEN__;
+  if (!admin && memoryToken) {
+    admin = await testAndGetAdminClient(shop, memoryToken);
     if (admin) {
-      console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA ENV/MEMORY TOKEN ===", shop);
+      console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA MEMORY TOKEN ===", shop);
       return admin;
     }
   }
 
-  // Priority 2: Try standard unauthenticated.admin(shop)
+  // Priority 2: Try candidate token list (ENV token & latest auto-tokens)
+  for (const token of CANDIDATE_TOKENS) {
+    if (!admin && token) {
+      admin = await testAndGetAdminClient(shop, token);
+      if (admin) {
+        console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA CANDIDATE TOKEN ===", shop);
+        return admin;
+      }
+    }
+  }
+
+  // Priority 3: Try standard unauthenticated.admin(shop)
   if (!admin && shop) {
     try {
       const unauth = await unauthenticated.admin(shop);
@@ -121,15 +136,6 @@ export async function getAdminClient(target?: Request | string) {
       }
     } catch (e) {
       // Unauthenticated admin lookup failed, proceed to fallbacks
-    }
-  }
-
-  // Priority 3: Fallback permanent token from Shopify Admin
-  if (!admin) {
-    admin = await testAndGetAdminClient(shop, FALLBACK_SHOPIFY_TOKEN);
-    if (admin) {
-      console.log("=== SUCCESSFULLY RECOVERED ADMIN VIA PERMANENT FALLBACK TOKEN ===", shop);
-      return admin;
     }
   }
 

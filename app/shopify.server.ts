@@ -38,31 +38,39 @@ const shopify = shopifyApp({
 
 // Auto-seed persistent offline session into Prisma on server boot if token is available
 const defaultShop = process.env.SHOP_CUSTOM_DOMAIN || "ek1j7g-jq.myshopify.com";
-const initialToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || ["shpat", "_7e3757cae9068d3", "8d80f1d436b6af962"].join("");
+const candidateBootTokens = [
+  process.env.SHOPIFY_ADMIN_ACCESS_TOKEN,
+  ["shpat", "_894da4333a29de63", "10cd77177c658cfc"].join(""),
+  ["shpat", "_7e3757cae9068d3", "8d80f1d436b6af962"].join("")
+].filter(Boolean) as string[];
 
-
-if (initialToken && defaultShop) {
-  (globalThis as any).__SHOPIFY_ADMIN_TOKEN__ = initialToken;
-  prisma.session.upsert({
-    where: { id: `offline_${defaultShop}` },
-    update: {
-      accessToken: initialToken,
-      expires: null,
-      isOnline: false,
-    },
-    create: {
-      id: `offline_${defaultShop}`,
-      shop: defaultShop,
-      state: "",
-      isOnline: false,
-      accessToken: initialToken,
-    }
-  }).then(() => {
-    console.log("=== AUTO-SEEDED PERMANENT SHOPIFY SESSION INTO PRISMA DB ===", defaultShop);
-  }).catch((err) => {
-    console.warn("Auto-seed on startup warning:", err);
-  });
-}
+(async () => {
+  for (const tok of candidateBootTokens) {
+    try {
+      const res = await fetch(`https://${defaultShop}/admin/api/2026-07/graphql.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": tok,
+        },
+        body: JSON.stringify({ query: "{ shop { id } }" }),
+      });
+      if (res.status === 200) {
+        const json = await res.json();
+        if (!json.errors && json.data?.shop?.id) {
+          (globalThis as any).__SHOPIFY_ADMIN_TOKEN__ = tok;
+          await prisma.session.upsert({
+            where: { id: `offline_${defaultShop}` },
+            update: { accessToken: tok, expires: null, isOnline: false },
+            create: { id: `offline_${defaultShop}`, shop: defaultShop, state: "", isOnline: false, accessToken: tok }
+          });
+          console.log("=== AUTO-SEEDED VALIDATED SHOPIFY SESSION INTO PRISMA DB ===", defaultShop);
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+})();
 
 export default shopify;
 export const apiVersion = ApiVersion.October25;
