@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate, unauthenticated } from "../shopify.server";
+import { authenticate } from "../shopify.server";
+import { getAdminClient } from "../utils/admin-client.server";
 
 function riderTag(customerId: string) {
   return `flutter_customer_${customerId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
@@ -26,7 +27,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     console.log("=== WEBHOOK ATTRIBUTES ===", { customerId, checkoutCustomer });
 
     if (shop) {
-      const { admin } = await unauthenticated.admin(shop);
+      const admin = await getAdminClient(shop);
 
       if (admin) {
         const checkoutFirstName = checkoutCustomer?.first_name || "";

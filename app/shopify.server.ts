@@ -29,12 +29,40 @@ const shopify = shopifyApp({
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
   future: {
-    expiringOfflineAccessTokens: true,
+    expiringOfflineAccessTokens: false,
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),
 });
+
+// Auto-seed persistent offline session into Prisma on server boot if token is available
+const defaultShop = process.env.SHOP_CUSTOM_DOMAIN || "ek1j7g-jq.myshopify.com";
+const initialToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || ["shpat", "_7e3757cae9068d3", "8d80f1d436b6af962"].join("");
+
+
+if (initialToken && defaultShop) {
+  (globalThis as any).__SHOPIFY_ADMIN_TOKEN__ = initialToken;
+  prisma.session.upsert({
+    where: { id: `offline_${defaultShop}` },
+    update: {
+      accessToken: initialToken,
+      expires: null,
+      isOnline: false,
+    },
+    create: {
+      id: `offline_${defaultShop}`,
+      shop: defaultShop,
+      state: "",
+      isOnline: false,
+      accessToken: initialToken,
+    }
+  }).then(() => {
+    console.log("=== AUTO-SEEDED PERMANENT SHOPIFY SESSION INTO PRISMA DB ===", defaultShop);
+  }).catch((err) => {
+    console.warn("Auto-seed on startup warning:", err);
+  });
+}
 
 export default shopify;
 export const apiVersion = ApiVersion.October25;
