@@ -193,6 +193,10 @@ export default function Index() {
 
       <s-section slot="aside" heading="App Status Specs">
         <s-paragraph>
+          <s-text>Developer: </s-text>
+          <s-text font-weight="bold">Pankaj Berwal</s-text>
+        </s-paragraph>
+        <s-paragraph>
           <s-text>Framework: </s-text>
           <s-link href="https://reactrouter.com/" target="_blank">
             React Router v7
